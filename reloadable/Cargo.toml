@@ -10,5 +10,4 @@ ui = { path = "../ui" }
 iced.workspace = true
 hot-lib-reloader = { version = "0.7.0" }
 once_cell = { workspace = true }
-bincode = { workspace = true }
 crossfire = "1.0.1"

@@ -1,13 +1,12 @@
-
-// mod tokio_executor;
-// mod unsafe_ref;
+pub mod hot_ice;
+pub mod reloader;
+pub mod unsafe_reference;
 
 use crossfire::mpmc::{RxBlocking, RxFuture, SharedSenderBRecvF, SharedSenderFRecvB, TxBlocking, TxFuture};
 use hot_lib_reloader::LibReloadObserver;
-use iced::{futures::{SinkExt, Stream}, stream, widget::{button, column, container, text}, Length, Task};
+use iced::{application::Boot, futures::{SinkExt, Stream}, stream, widget::{button, column, container, text}, Length, Task};
 use once_cell::sync::OnceCell;
 use app::*;
-
 
 
 #[hot_lib_reloader::hot_module(dylib = "ui", lib_dir = "target/debug")]
@@ -17,8 +16,8 @@ mod app {
 
     #[hot_functions]
     extern "Rust" {
-        pub fn view(state: &Reloadable) -> Element<Message>;
-        pub fn update(state: &mut Reloadable, message: ui::Message) -> Task<ui::Message>;
+        pub fn view(state: &Names) -> Element<Message>;
+        pub fn update(state: &mut Names, message: ui::Message) -> Task<ui::Message>;
     }
 
 
@@ -38,16 +37,16 @@ pub enum Message {
 }
 
 struct ReloadableInner {
-    app: Reloadable,
+    app: Names,
     is_reloading: bool,
-    update_ch_tx: TxFuture<ReloadEvent, SharedSenderFRecvB>,
+    update_ch_tx: TxFuture<ReadyToReload, SharedSenderFRecvB>,
 }
 
 impl ReloadableInner {
     pub fn new() -> Self {
         let (update_ch_tx, _) = UPDATE_CHANNEL.get().unwrap().clone();
         Self {
-            app: Reloadable::new(),
+            app: Names::new(),
             is_reloading: false,
             update_ch_tx,
         }
@@ -65,7 +64,7 @@ impl ReloadableInner {
             }
             Message::SendReadySignal => {
                 let sender = self.update_ch_tx.clone();
-                Task::future(async move {sender.send(ReloadEvent::ReadyToReload).await}).discard()
+                Task::future(async move {sender.send(ReadyToReload).await}).discard()
             }
             Message::ReloadFinished => {
                 self.is_reloading = false;
@@ -126,18 +125,19 @@ fn listen_for_lib_change() -> impl Stream<Item = Message> {
 }
 
 static SUBSCRIPTION_CHANNEL: OnceCell<(TxBlocking<ReloadEvent,SharedSenderBRecvF>, RxFuture<ReloadEvent, SharedSenderBRecvF>)> = OnceCell::new();
-static UPDATE_CHANNEL: OnceCell<(TxFuture<ReloadEvent, SharedSenderFRecvB>, RxBlocking<ReloadEvent, SharedSenderFRecvB>)> = OnceCell::new();
+static UPDATE_CHANNEL: OnceCell<(TxFuture<ReadyToReload, SharedSenderFRecvB>, RxBlocking<ReadyToReload, SharedSenderFRecvB>)> = OnceCell::new();
 
 #[derive(Debug, Clone, PartialEq)]
 enum ReloadEvent {
     AboutToReload,
-    ReadyToReload,
     ReloadComplete
 }
 
-struct ReloadableApp;
+struct ReadyToReload;
 
-impl ReloadableApp {
+struct HotIce;
+
+impl HotIce {
     pub fn new(lib_observer: LibReloadObserver) -> Self {
         let (subscription_ch_tx, _)  = SUBSCRIPTION_CHANNEL.get_or_init(||crossfire::mpmc::bounded_tx_blocking_rx_future(1)).clone();
         let (_, update_ch_rx) = UPDATE_CHANNEL.get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1)).clone();
@@ -151,7 +151,7 @@ impl ReloadableApp {
                 }
                 
                 println!("Waiting for reload signal");
-                let Ok(ReloadEvent::ReadyToReload) = update_ch_rx.recv() else {
+                let Ok(ReadyToReload) = update_ch_rx.recv() else {
                     panic!("Wrong reload event received")
                 };
 
@@ -165,6 +165,7 @@ impl ReloadableApp {
                 }
             }
         });
+        
         Self
     }
 
@@ -183,6 +184,6 @@ impl ReloadableApp {
 fn main() {
     let lib_observer = app::subscribe();
 
-    ReloadableApp::new(lib_observer).run().unwrap();
+    HotIce::new(lib_observer).run().unwrap();
 }
 

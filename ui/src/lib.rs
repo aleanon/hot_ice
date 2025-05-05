@@ -1,5 +1,8 @@
+mod new_mod;
+
 use iced::{widget::{button, column, container, text_input, row}, window, Length};
 pub use iced::{time, widget::text, Element, Subscription, Task};
+use new_mod::NewStruct;
 use serde::{Deserialize, Serialize};
 
 
@@ -9,23 +12,25 @@ pub enum Message {
     Close,
     UpdateName(String),
     UpdateOtherName(String),
+    NewModMessage(new_mod::Message)
 }
 
 pub enum Action {
     None,
     Task(Task<Message>),
 }
-#[derive(Serialize, Deserialize)]
-pub struct Reloadable {
+pub struct Names {
     pub other_name: String,
     pub name: String,
+    pub new_struct: NewStruct
 }
 
-impl Reloadable {
+impl Names {
     pub fn new() -> Self {
         Self {
             name: String::from("test text"),
-            other_name: String::from("other_name")
+            other_name: String::from("other_name"),
+            new_struct: NewStruct::new()
         }
     }
 
@@ -35,6 +40,7 @@ impl Reloadable {
             Message::UpdateName(name) => self.name = name,
             Message::UpdateOtherName(name) => self.name = name,
             Message::Close => return window::get_latest().and_then(window::close),
+            Message::NewModMessage(message) => return self.new_struct.update(message).map(Message::NewModMessage),
             Message::None => {}
         }
         Task::none()
@@ -50,9 +56,7 @@ impl Reloadable {
             button("exit").on_press(Message::Close),
             button("exit").on_press(Message::Close),
             button("exit").on_press(Message::Close),
-            button("exit").on_press(Message::Close),
-            button("exit").on_press(Message::Close),
-            button("exit").on_press(Message::Close),
+            self.new_struct.view().map(Message::NewModMessage)           
         ]
         )
         .center_x(Length::Fill)
