@@ -1,14 +1,22 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::{mpsc, Arc, Mutex, RwLock}, time::Duration};
 
 use crossfire::mpmc::{RxBlocking, RxFuture, SharedSenderBRecvF, SharedSenderFRecvB, TxBlocking, TxFuture};
-use iced::{advanced::{self, widget}, futures::Stream, shell::graphics::compositor, stream, theme::{self, Base}, widget::{button, column, container, stack, text, themer}, window, Element, Length, Program, Task, Theme};
+use iced::{futures::Stream, stream, theme::{self, Base}, widget::{button, column, container, stack, text, themer}, window, Element, Length, Program, Task, Theme};
 use once_cell::sync::OnceCell;
 
+use crate::lib_reloader::LibReloader;
 
 
 
-static SUBSCRIPTION_CHANNEL: OnceCell<(TxBlocking<ReloadEvent,SharedSenderBRecvF>, RxFuture<ReloadEvent, SharedSenderBRecvF>)> = OnceCell::new();
-static UPDATE_CHANNEL: OnceCell<(TxFuture<ReadyToReload, SharedSenderFRecvB>, RxBlocking<ReadyToReload, SharedSenderFRecvB>)> = OnceCell::new();
+
+pub static SUBSCRIPTION_CHANNEL: OnceCell<(TxBlocking<ReloadEvent, SharedSenderBRecvF>, RxFuture<ReloadEvent, SharedSenderBRecvF>)> = OnceCell::new();
+pub static UPDATE_CHANNEL: OnceCell<(TxFuture<ReadyToReload, SharedSenderFRecvB>, RxBlocking<ReadyToReload, SharedSenderFRecvB>)> = OnceCell::new();
+static LIB_RELOADER: OnceCell<Arc<Mutex<LibReloader>>> = OnceCell::new();
+
+#[allow(type_alias_bounds)]
+type Widget<'a, P> = iced::Element<'a, <P as Program>::Message, <P as Program>::Message, <P as Program>::Renderer>;
+#[allow(type_alias_bounds)]
+type View<'a, P> = fn(&'a <P as Program>::State) -> Widget<'a, P>; 
 
 
 pub enum Message<P> where P: Program {
@@ -22,9 +30,8 @@ pub enum Message<P> where P: Program {
 
 impl<P> Clone for Message<P> 
 where 
-    P: Program,
-    P::Message: Clone
-     {
+    P: Program, 
+    P::Message: Clone {
     fn clone(&self) -> Self {
         match &self {
             Self::AppMessage(message) => Self::AppMessage(message.clone()),
@@ -36,10 +43,10 @@ where
     }
 }
 
-impl<P: Program> Debug for Message<P> where P::Message: Debug {
+impl<P: Program> Debug for Message<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AppMessage(message) => write!(f,"Message::AppMessage({:?})", message),
+            Self::AppMessage(message) => message.fmt(f),
             Self::SendReadySignal => write!(f,"Self::SendReadySignal"),
             Self::Reloading => write!(f,"Self::Reloading"),
             Self::ReloadFinished => write!(f, "Self::ReloadFinished"),
@@ -49,22 +56,22 @@ impl<P: Program> Debug for Message<P> where P::Message: Debug {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum ReloadEvent {
+pub enum ReloadEvent {
     AboutToReload,
-    ReloadComplete
+    ReloadComplete,
 }
 
-struct ReadyToReload;
+pub struct ReadyToReload;
 
-pub trait Catalogs: text::Catalog + button::Catalog + container::Catalog {} 
 
-pub struct Reloader<P: Program> {
+pub struct Reloader<'a, P: Program> {
     state: P::State,
+    view: fn(&'a P::State) -> Widget<'a, P>,
     is_reloading: bool,
     update_ch_tx: TxFuture<ReadyToReload, SharedSenderFRecvB>,
 }
 
-impl<P> Reloader<P> where 
+impl<'a, P> Reloader<'a, P> where 
     P: Program + 'static,
     P::Message: Clone,
     {
@@ -74,11 +81,57 @@ impl<P> Reloader<P> where
     }
 
     pub fn new(program: &P) -> (Self, Task<Message<P>>) {
+        let (update_ch_tx, update_ch_rx) = UPDATE_CHANNEL.get().unwrap().clone();
+        let (sub_ch_tx, _) = SUBSCRIPTION_CHANNEL.get().unwrap().clone();
+        let mut lib_reloader = LibReloader::new("target/debug", "ui", None, None).expect("Unable to create LibReloader");
+        let change_subscriber = lib_reloader.subscribe_to_file_changes();
+        LIB_RELOADER.get_or_init(||Arc::new(Mutex::new(lib_reloader)));
 
-        let (update_ch_tx, _) = UPDATE_CHANNEL.get().unwrap().clone();
+        std::thread::spawn(move || {                        
+            loop {
+                let Ok(_) = change_subscriber.recv() else {
+                    panic!("Sub channel closed")
+                };
+                if let Err(err) = sub_ch_tx.send(ReloadEvent::AboutToReload) {
+                    println!("{err}")
+                }
+
+                let Ok(ReadyToReload) = update_ch_rx.recv() else {
+                    panic!("Update Channel closed")
+                };
+
+                loop {
+                    if let Some(lock) = LIB_RELOADER.get() {
+                        if let Ok(mut lib_reloader) = lock.try_lock() {
+                            if let Err(err) = lib_reloader.update() {
+                                println!("{err}")
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+
+                if let Err(_) = sub_ch_tx.send(ReloadEvent::ReloadComplete) {
+                    panic!("Subscription Channel closed")
+                }
+            }
+
+        });
+        let view = |state: &'a P::State| {
+            let lib = LIB_RELOADER.get().unwrap().try_lock().unwrap();
+            unsafe {
+                let function = lib.get_symbol::<View<'a, P>>(b"view\0").expect("symbol view not found");
+                function(state)
+            }
+        };
+
+
         let (state, task)  = program.boot();
         let reloader = Self {
             state,
+            view,
             is_reloading: false,
             update_ch_tx,
         };
@@ -116,7 +169,7 @@ impl<P> Reloader<P> where
         if !self.is_reloading {
             program.view(&self.state, window).map(Message::AppMessage)
         } else {
-            let theme:<P as Program>::Theme = program.theme(&self.state, window);
+            let theme = program.theme(&self.state, window);
 
             let derive_theme = move || {
             theme
@@ -130,7 +183,7 @@ impl<P> Reloader<P> where
                 button("Refresh").on_press(Message::None)
             ])
             .center_x(Length::Fill)
-            .center_y(Length::Fill))
+            .center_y(Length::Fill)).into()
         }
     }
 
@@ -185,16 +238,18 @@ impl<P> Reloader<P> where
 
 }
 
-pub struct Wrapper<P: Program + 'static> {
+pub struct Wrapper<P> 
+where 
+    P: Program + 'static,
+    P::Message: Clone {
     program: P
 }
 
 impl<P: Program> Program for Wrapper<P> 
     where 
         P: Program + 'static,
-        P::Theme: Catalogs,
-        P::Message: Clone {
-    type State = Reloader<P>;
+        <P as Program>::Message: Clone {
+    type State = Reloader<'static, P>;
     type Message = Message<P>;
     type Theme = P::Theme;
     type Renderer = P::Renderer;

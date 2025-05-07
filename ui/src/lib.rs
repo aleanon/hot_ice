@@ -50,7 +50,7 @@ impl Names {
     pub fn view(&self) -> Element<Message> {
         container(column![
             text_input("Enter name", &self.name)
-                .on_input(Message::UpdateName).size(20),
+                .on_input(Message::UpdateName).size(60),
             text_input("Enter name", &self.other_name)
                 .on_input(Message::UpdateOtherName).size(20),
             button("exit").on_press(Message::Close),

@@ -2654,10 +2654,16 @@ dependencies = [
 name = "reloadable"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "crossfire",
  "hot-lib-reloader",
  "iced",
+ "libloading",
+ "log",
+ "notify",
+ "notify-debouncer-full",
  "once_cell",
+ "thiserror 1.0.69",
  "ui",
 ]
 

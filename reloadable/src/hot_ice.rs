@@ -3,8 +3,93 @@ use std::{borrow::Cow, marker::PhantomData, pin::Pin};
 use iced::{advanced::{self, graphics::compositor, text, Renderer}, application::{self, Boot, Title, Update, View}, theme, window, Application, Element, Font, Program, Result, Settings, Size, Task};
 use ui::Subscription;
 
-use crate::{reloader::{Message, Reloader}, unsafe_reference::UnsafeRefMut};
+use crate::{reloadable::HotView, reloader::{Message, ReadyToReload, ReloadEvent, Reloader, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL}, unsafe_reference::UnsafeRefMut};
 
+
+// pub fn application<State, Message, Theme, Renderer> (
+//     dylib_name: &'static str,
+//     boot: impl Boot<State, Message>,
+//     update: impl Update<State, Message>,
+//     view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>,
+// ) -> HotIce<impl Program<State = State, Message = Message, Theme = Theme>>
+// where
+//     State: 'static,
+//     Message: Send + std::fmt::Debug + 'static + Clone,
+//     Theme: Default + theme::Base,
+//     Renderer: advanced::text::Renderer + compositor::Default,
+// {
+//     use std::marker::PhantomData;
+
+//     struct Instance<State, Message, Theme, Renderer, Boot, Update, View> {
+//         boot: Boot,
+//         update: Update,
+//         view: View,
+//         _state: PhantomData<State>,
+//         _message: PhantomData<Message>,
+//         _theme: PhantomData<Theme>,
+//         _renderer: PhantomData<Renderer>,
+//     }
+
+        
+
+//     impl<State, Message, Theme, Renderer, Boot, Update, View> Program
+//         for Instance<State, Message, Theme, Renderer, Boot, Update, View>
+//     where
+//         Message: Send + std::fmt::Debug + 'static + Clone,
+//         Theme: Default + theme::Base,
+//         Renderer: iced::advanced::text::Renderer + compositor::Default,
+//         Boot: self::Boot<State, Message>,
+//         Update: self::Update<State, Message>,
+//         View: for<'a> self::View<'a, State, Message, Theme, Renderer>,
+//     {
+//         type State = State;
+//         type Message = Message;
+//         type Theme = Theme;
+//         type Renderer = Renderer;
+//         type Executor = iced::executor::Default;
+
+//         fn name() -> &'static str {
+//             let name = std::any::type_name::<State>();
+
+//             name.split("::").next().unwrap_or("a_cool_application")
+//         }
+
+//         fn boot(&self) -> (State, Task<Message>) {
+//             self.boot.boot()
+//         }
+
+//         fn update(
+//             &self,
+//             state: &mut Self::State,
+//             message: Self::Message,
+//         ) -> Task<Self::Message> {
+//             self.update.update(state, message).into()
+//         }
+
+//         fn view<'a>(
+//             &self,
+//             state: &'a Self::State,
+//             _window: window::Id,
+//         ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+//             self.view.view(state).into()
+//         }
+//     }
+
+//     HotIce {
+//         dylib_name,
+//         program: Instance {
+//             boot,
+//             update,
+//             view,
+//             _state: PhantomData,
+//             _message: PhantomData,
+//             _theme: PhantomData,
+//             _renderer: PhantomData,
+//         },
+//         settings: Settings::default(),
+//         window: window::Settings::default()
+//     }
+// }
 
 pub struct HotIce<P> where 
     P: Program {
@@ -15,94 +100,66 @@ pub struct HotIce<P> where
 }
 
 
-impl<P: Program> HotIce<P> {
-    pub fn application<State, Message, Theme, Renderer> (
-        dylib_name: &'static str,
-        boot: impl Boot<State, Message>,
-        update: impl Update<State, Message>,
-        view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>,
-    ) -> HotIce<impl Program<State = State, Message = Message, Theme = Theme>>
-    where
-        State: 'static,
-        Message: Send + std::fmt::Debug + 'static,
-        Theme: Default + theme::Base,
-        Renderer: advanced::text::Renderer + compositor::Default,
-    {
-        use std::marker::PhantomData;
-    
-        struct Instance<State, Message, Theme, Renderer, Boot, Update, View> {
-            boot: Boot,
-            update: Update,
-            view: View,
-            _state: PhantomData<State>,
-            _message: PhantomData<Message>,
-            _theme: PhantomData<Theme>,
-            _renderer: PhantomData<Renderer>,
-        }
-    
-        impl<State, Message, Theme, Renderer, Boot, Update, View> Program
-            for Instance<State, Message, Theme, Renderer, Boot, Update, View>
-        where
-            Message: Send + std::fmt::Debug + 'static,
-            Theme: Default + theme::Base,
-            Renderer: iced::advanced::text::Renderer + compositor::Default,
-            Boot: self::Boot<State, Message>,
-            Update: self::Update<State, Message>,
-            View: for<'a> self::View<'a, State, Message, Theme, Renderer>,
-        {
-            type State = State;
-            type Message = Message;
-            type Theme = Theme;
-            type Renderer = Renderer;
-            type Executor = iced::executor::Default;
-    
-            fn name() -> &'static str {
-                let name = std::any::type_name::<State>();
-    
-                name.split("::").next().unwrap_or("a_cool_application")
-            }
-    
-            fn boot(&self) -> (State, Task<Message>) {
-                self.boot.boot()
-            }
-    
-            fn update(
-                &self,
-                state: &mut Self::State,
-                message: Self::Message,
-            ) -> Task<Self::Message> {
-                self.update.update(state, message).into()
-            }
-    
-            fn view<'a>(
-                &self,
-                state: &'a Self::State,
-                _window: window::Id,
-            ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
-                self.view.view(state).into()
-            }
-        }
-    
-        HotIce {
+
+impl<P> HotIce<P>
+where
+    P: Program + 'static,
+    P::Message: Clone {
+
+    pub fn with_program(dylib_name: &'static str, program: P) -> Self {
+        Self {
             dylib_name,
-            program: Instance {
-                boot,
-                update,
-                view,
-                _state: PhantomData,
-                _message: PhantomData,
-                _theme: PhantomData,
-                _renderer: PhantomData,
-            },
+            program,
             settings: Settings::default(),
-            window: window::Settings::default()
+            window: window::Settings::default(),
         }
     }
 
-    pub fn run(self) -> Result
-    where
-        Self: 'static,
-    {
+    pub fn run(self) -> Result {
+        let (subscription_ch_tx, _)  = SUBSCRIPTION_CHANNEL.get_or_init(||crossfire::mpmc::bounded_tx_blocking_rx_future(1)).clone();
+        let (_, update_ch_rx) = UPDATE_CHANNEL.get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1)).clone();
+
+
+        #[hot_lib_reloader::hot_module(dylib = "ui", lib_dir = "target/debug")]
+        mod app {
+            pub use ui::*; 
+            // hot_functions_from_file!("ui/src/lib.rs", ignore_no_mangle = true);
+
+            #[hot_functions]
+            extern "Rust" {
+                pub fn view(state: &Names) -> Element<Message>;
+                pub fn update(state: &mut Names, message: ui::Message) -> Task<ui::Message>;
+            }
+
+            #[lib_change_subscription]
+            pub fn subscribe() -> hot_lib_reloader::LibReloadObserver {}
+        }
+
+        std::thread::spawn(move || {
+            let lib_observer = app::subscribe();
+            loop {
+                println!("Waiting for reload");
+                let blocker = lib_observer.wait_for_about_to_reload();
+                if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
+                    println!("{err}")
+                }
+                
+                println!("Waiting for reload signal");
+                let Ok(ReadyToReload) = update_ch_rx.recv() else {
+                    panic!("Wrong reload event received")
+                };
+
+                drop(blocker);
+                println!("Reloading lib");
+
+                lib_observer.wait_for_reload();
+                println!("Reload complete");
+                if let Err(err) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
+                    println!("{err}")
+                }
+            }
+        });
+
         let wrapper = Reloader::wrap(self.program);
         Ok(iced::shell::run(wrapper, self.settings, Some(self.window))?)
     }
@@ -326,133 +383,89 @@ impl<P: Program> HotIce<P> {
     // }
 }
 
-// pub fn application<State, Message, Theme, Renderer> (
-//     dylib_name: &'static str,
-//     boot: impl Boot<State, Message>,
-//     update: impl Update<State, Message>,
-//     view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>,
-// ) -> HotIce<impl Program<State = State, Message = Message, Theme = Theme>>
-// where
-//     State: 'static,
-//     Message: Send + std::fmt::Debug + 'static,
-//     Theme: Default + theme::Base,
-//     Renderer: RendererBound,
-// {
-//     use std::marker::PhantomData;
-
-//     struct Instance<State, Message, Theme, Renderer, Boot, Update, View> {
-//         boot: Boot,
-//         update: Update,
-//         view: View,
-//         _state: PhantomData<State>,
-//         _message: PhantomData<Message>,
-//         _theme: PhantomData<Theme>,
-//         _renderer: PhantomData<Renderer>,
-//     }
-
-//     impl<State, Message, Theme, Renderer, Boot, Update, View> Program
-//         for Instance<State, Message, Theme, Renderer, Boot, Update, View>
-//     where
-//         Message: Send + std::fmt::Debug + 'static,
-//         Theme: Default + theme::Base,
-//         Renderer: RendererBound,
-//         Boot: self::Boot<State, Message>,
-//         Update: self::Update<State, Message>,
-//         View: for<'a> self::View<'a, State, Message, Theme, Renderer>,
-//     {
-//         type State = State;
-//         type Message = Message;
-//         type Theme = Theme;
-//         type Renderer = Renderer;
-//         type Executor = iced::executor::Default;
-
-//         fn name() -> &'static str {
-//             let name = std::any::type_name::<State>();
-
-//             name.split("::").next().unwrap_or("a_cool_application")
-//         }
-
-//         fn boot(&self) -> (State, Task<Message>) {
-//             self.boot.boot()
-//         }
-
-//         fn update(
-//             &self,
-//             state: &mut Self::State,
-//             message: Self::Message,
-//         ) -> Task<Self::Message> {
-//             self.update.update(state, message).into()
-//         }
-
-//         fn view<'a>(
-//             &self,
-//             state: &'a Self::State,
-//             _window: window::Id,
-//         ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
-//             self.view.view(state).into()
-//         }
-//     }
-
-//     HotIce {
-//         dylib_name,
-//         raw: Instance {
-//             boot,
-//             update,
-//             view,
-//             _state: PhantomData,
-//             _message: PhantomData,
-//             _theme: PhantomData,
-//             _renderer: PhantomData,
-//         },
-//         settings: Settings::default(),
-//         window: window::Settings::default()
-//     }
-// }
+pub fn application<State, Message, Theme, Renderer> (
+    dylib_name: &'static str,
+    dylib_path: &'static str,
+    boot: impl Boot<State, Message>,
+    update: impl Update<State, Message>,
+    view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>,
+) -> HotIce<impl Program<State = State, Message = Message, Theme = Theme>>
+where
+    State: 'static,
+    Message: Send + std::fmt::Debug + 'static + Clone,
+    Theme: Default + theme::Base,
+    Renderer: advanced::text::Renderer + compositor::Default,
+{
+    use std::marker::PhantomData;
 
 
+    struct Instance<State, Message, Theme, Renderer, Boot, Update, View> {
+        boot: Boot,
+        update: Update,
+        view: View,
+        _state: PhantomData<State>,
+        _message: PhantomData<Message>,
+        _theme: PhantomData<Theme>,
+        _renderer: PhantomData<Renderer>,
+    }
 
+        
 
+    impl<State, Message, Theme, Renderer, Boot, Update, View> Program
+        for Instance<State, Message, Theme, Renderer, Boot, Update, View>
+    where
+        Message: Send + std::fmt::Debug + 'static + Clone,
+        Theme: Default + theme::Base,
+        Renderer: iced::advanced::text::Renderer + compositor::Default,
+        Boot: self::Boot<State, Message>,
+        Update: self::Update<State, Message>,
+        View: for<'a> self::View<'a, State, Message, Theme, Renderer>,
+    {
+        type State = State;
+        type Message = Message;
+        type Theme = Theme;
+        type Renderer = Renderer;
+        type Executor = iced::executor::Default;
 
-// struct HotIce<BootFn, UpdateFn, ViewFn, State, Message, Theme, Renderer> 
-// where   BootFn: Boot<State, Message>,
-//         UpdateFn: Update<State, Message>,
-//         ViewFn: for<'a> View<'a, State, Message, Theme, Renderer>,
-//         State: 'static,
-//         Message: Send + std::fmt::Debug + 'static,
-//         Theme: Default + theme::Base, 
-//         {
-//     boot: BootFn, 
-//     update: UpdateFn, 
-//     view:  ViewFn,
-//     _state: PhantomData<State>,
-//     _message: PhantomData<Message>, 
-//     _theme: PhantomData<Theme>,
-//     _renderer: PhantomData<Renderer>,
-// }
+        fn name() -> &'static str {
+            let name = std::any::type_name::<State>();
 
-// impl<BootFn, UpdateFn, ViewFn, State, Message, Theme, Renderer> HotIce<BootFn, UpdateFn, ViewFn, State, Message, Theme, Renderer> 
-// where  BootFn: Boot<State, Message>,
-//         UpdateFn: Update<State, Message>,
-//         ViewFn: for<'a> View<'a, State, Message, Theme, Renderer>,
-//         State: 'static,
-//         Message: Send + std::fmt::Debug + 'static,
-//         Theme: Default + theme::Base,
-//         {
+            name.split("::").next().unwrap_or("a_cool_application")
+        }
 
-//     pub fn new2(
-//         boot: impl Boot<State, Message>, 
-//         update: impl Update<State, Message>, 
-//         view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>
-//     ) -> HotIce<BootFn, UpdateFn, ViewFn, State, Message, Theme, Renderer> {
-//         Self {
-//             boot,
-//             update,
-//             view,
-//             _message: PhantomData,
-//             _state: PhantomData,
-//             _theme: PhantomData,
-//             _renderer: PhantomData,
-//         }
-//     }   
-// }
+        fn boot(&self) -> (State, Task<Message>) {
+            self.boot.boot()
+        }
 
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: Self::Message,
+        ) -> Task<Self::Message> {
+            self.update.update(state, message).into()
+        }
+
+        fn view<'a>(
+            &self,
+            state: &'a Self::State,
+            _window: window::Id,
+        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+            self.view.view(state).into()
+        }
+    }
+
+    HotIce {
+        dylib_name,
+        program: Instance {
+            boot,
+            update,
+            view,
+            _state: PhantomData,
+            _message: PhantomData,
+            _theme: PhantomData,
+            _renderer: PhantomData,
+        },
+        settings: Settings::default(),
+        window: window::Settings::default()
+    }
+}
