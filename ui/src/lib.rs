@@ -50,9 +50,9 @@ impl Names {
     pub fn view(&self) -> Element<Message> {
         container(column![
             text_input("Enter name", &self.name)
-                .on_input(Message::UpdateName).size(60),
+                .on_input(Message::UpdateName).size(40),
             text_input("Enter name", &self.other_name)
-                .on_input(Message::UpdateOtherName).size(20),
+                .on_input(Message::UpdateOtherName).size(40),
             button("exit").on_press(Message::Close),
             button("exit").on_press(Message::Close),
             button("exit").on_press(Message::Close),
@@ -65,7 +65,7 @@ impl Names {
     }
 
     pub fn theme(&self) -> iced::Theme {
-        iced::Theme::Dark
+        iced::Theme::Light
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

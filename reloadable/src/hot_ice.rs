@@ -1,9 +1,9 @@
-use std::{borrow::Cow, marker::PhantomData, pin::Pin};
+use std::{any::type_name, borrow::Cow, marker::PhantomData, pin::Pin};
 
-use iced::{advanced::{self, graphics::compositor, text, Renderer}, application::{self, Boot, Title, Update, View}, theme, window, Application, Element, Font, Program, Result, Settings, Size, Task};
+use iced::{advanced::{self, graphics::compositor, text, Renderer}, application::{self, Boot, Title, Update}, theme, window, Application, Element, Executor, Font, Program, Result, Settings, Size, Task};
 use ui::Subscription;
 
-use crate::{reloadable::HotView, reloader::{Message, ReadyToReload, ReloadEvent, Reloader, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL}, unsafe_reference::UnsafeRefMut};
+use crate::{program, reloadable::HotView, reloader::{Message, ReadyToReload, Reload, ReloadEvent, Reloader, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL}, unsafe_reference::UnsafeRefMut};
 
 
 // pub fn application<State, Message, Theme, Renderer> (
@@ -116,52 +116,8 @@ where
     }
 
     pub fn run(self) -> Result {
-        let (subscription_ch_tx, _)  = SUBSCRIPTION_CHANNEL.get_or_init(||crossfire::mpmc::bounded_tx_blocking_rx_future(1)).clone();
-        let (_, update_ch_rx) = UPDATE_CHANNEL.get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1)).clone();
-
-
-        #[hot_lib_reloader::hot_module(dylib = "ui", lib_dir = "target/debug")]
-        mod app {
-            pub use ui::*; 
-            // hot_functions_from_file!("ui/src/lib.rs", ignore_no_mangle = true);
-
-            #[hot_functions]
-            extern "Rust" {
-                pub fn view(state: &Names) -> Element<Message>;
-                pub fn update(state: &mut Names, message: ui::Message) -> Task<ui::Message>;
-            }
-
-            #[lib_change_subscription]
-            pub fn subscribe() -> hot_lib_reloader::LibReloadObserver {}
-        }
-
-        std::thread::spawn(move || {
-            let lib_observer = app::subscribe();
-            loop {
-                println!("Waiting for reload");
-                let blocker = lib_observer.wait_for_about_to_reload();
-                if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
-                    println!("{err}")
-                }
-                
-                println!("Waiting for reload signal");
-                let Ok(ReadyToReload) = update_ch_rx.recv() else {
-                    panic!("Wrong reload event received")
-                };
-
-                drop(blocker);
-                println!("Reloading lib");
-
-                lib_observer.wait_for_reload();
-                println!("Reload complete");
-                if let Err(err) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
-                    println!("{err}")
-                }
-            }
-        });
-
-        let wrapper = Reloader::wrap(self.program);
-        Ok(iced::shell::run(wrapper, self.settings, Some(self.window))?)
+        let reloader = Reload::new(self.program);
+        Ok(iced::shell::run(reloader, self.settings, Some(self.window))?)
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
@@ -292,105 +248,112 @@ where
         }
     }
 
-    // /// Sets the [`Title`] of the [`Application`].
-    // pub fn title(
-    //     self,
-    //     title: impl Title<P::State>,
-    // ) -> Application<
-    //     impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    // > {
-    //     Application {
-    //         raw: program::with_title(self.program, move |state, _window| {
-    //             title.title(state)
-    //         }),
-    //         settings: self.settings,
-    //         window: self.window,
-    //     }
-    // }
+    /// Sets the [`Title`] of the [`Application`].
+    pub fn title(
+        self,
+        title: impl Title<P::State>,
+    ) -> HotIce<
+        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
+    > {
+        HotIce {
+            dylib_name: self.dylib_name,
+            program: program::with_title(self.program, move |state, _window| {
+                title.title(state)
+            }),
+            settings: self.settings,
+            window: self.window,
+        }
+    }
 
-    // /// Sets the subscription logic of the [`Application`].
-    // pub fn subscription(
-    //     self,
-    //     f: impl Fn(&P::State) -> Subscription<P::Message>,
-    // ) -> Application<
-    //     impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    // > {
-    //     Application {
-    //         raw: program::with_subscription(self.raw, f),
-    //         settings: self.settings,
-    //         window: self.window,
-    //     }
-    // }
+    /// Sets the subscription logic of the [`Application`].
+    pub fn subscription(
+        self,
+        f: impl Fn(&P::State) -> Subscription<P::Message>,
+    ) -> HotIce<
+        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
+    > {
+        HotIce {
+            dylib_name: self.dylib_name,
+            program: program::with_subscription(self.program, f),
+            settings: self.settings,
+            window: self.window,
+        }
+    }
 
-    // /// Sets the theme logic of the [`Application`].
-    // pub fn theme(
-    //     self,
-    //     f: impl Fn(&P::State) -> P::Theme,
-    // ) -> Application<
-    //     impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    // > {
-    //     Application {
-    //         raw: program::with_theme(self.raw, move |state, _window| f(state)),
-    //         settings: self.settings,
-    //         window: self.window,
-    //     }
-    // }
+    /// Sets the theme logic of the [`Application`].
+    pub fn theme(
+        self,
+        f: impl Fn(&P::State) -> P::Theme,
+    ) -> HotIce<
+        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
+    > {
+        HotIce {
+            dylib_name: self.dylib_name,
+            program: program::with_theme(self.program, move |state, _window| f(state)),
+            settings: self.settings,
+            window: self.window,
+        }
+    }
 
-    // /// Sets the style logic of the [`Application`].
-    // pub fn style(
-    //     self,
-    //     f: impl Fn(&P::State, &P::Theme) -> theme::Style,
-    // ) -> Application<
-    //     impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    // > {
-    //     Application {
-    //         raw: program::with_style(self.raw, f),
-    //         settings: self.settings,
-    //         window: self.window,
-    //     }
-    // }
+    /// Sets the style logic of the [`Application`].
+    pub fn style(
+        self,
+        f: impl Fn(&P::State, &P::Theme) -> theme::Style,
+    ) -> HotIce<
+        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
+    > {
+        HotIce {
+            dylib_name: self.dylib_name,
+            program: program::with_style(self.program, f),
+            settings: self.settings,
+            window: self.window,
+        }
+    }
 
-    // /// Sets the scale factor of the [`Application`].
-    // pub fn scale_factor(
-    //     self,
-    //     f: impl Fn(&P::State) -> f64,
-    // ) -> Application<
-    //     impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    // > {
-    //     Application {
-    //         raw: program::with_scale_factor(self.raw, move |state, _window| {
-    //             f(state)
-    //         }),
-    //         settings: self.settings,
-    //         window: self.window,
-    //     }
-    // }
+    /// Sets the scale factor of the [`Application`].
+    pub fn scale_factor(
+        self,
+        f: impl Fn(&P::State) -> f64,
+    ) -> HotIce<
+        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
+    > {
+        HotIce {
+            dylib_name: self.dylib_name,
+            program: program::with_scale_factor(self.program, move |state, _window| {
+                f(state)
+            }),
+            settings: self.settings,
+            window: self.window,
+        }
+    }
 
-    // /// Sets the executor of the [`Application`].
-    // pub fn executor<E>(
-    //     self,
-    // ) -> Application<
-    //     impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    // >
-    // where
-    //     E: Executor,
-    // {
-    //     Application {
-    //         raw: program::with_executor::<P, E>(self.raw),
-    //         settings: self.settings,
-    //         window: self.window,
-    //     }
-    // }
+    /// Sets the executor of the [`Application`].
+    pub fn executor<E>(
+        self,
+    ) -> HotIce<
+        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
+    >
+    where
+        E: Executor,
+    {
+        HotIce {
+            dylib_name: self.dylib_name,
+            program: program::with_executor::<P, E>(self.program),
+            settings: self.settings,
+            window: self.window,
+        }
+    }
 }
 
-pub fn application<State, Message, Theme, Renderer> (
+pub fn hot_application<View, State, Message, Theme, Renderer> (
     dylib_name: &'static str,
     dylib_path: &'static str,
-    boot: impl Boot<State, Message>,
+    boot: View,
     update: impl Update<State, Message>,
-    view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>,
+    view: impl for<'a> application::View<'a, State, Message, Theme, Renderer>,
 ) -> HotIce<impl Program<State = State, Message = Message, Theme = Theme>>
 where
+    View: Boot<State, Message>,
     State: 'static,
     Message: Send + std::fmt::Debug + 'static + Clone,
     Theme: Default + theme::Base,
@@ -409,7 +372,8 @@ where
         _renderer: PhantomData<Renderer>,
     }
 
-        
+    let view_path = type_name::<View>();
+    println!("{view_path}");
 
     impl<State, Message, Theme, Renderer, Boot, Update, View> Program
         for Instance<State, Message, Theme, Renderer, Boot, Update, View>
@@ -419,7 +383,7 @@ where
         Renderer: iced::advanced::text::Renderer + compositor::Default,
         Boot: self::Boot<State, Message>,
         Update: self::Update<State, Message>,
-        View: for<'a> self::View<'a, State, Message, Theme, Renderer>,
+        View: for<'a> application::View<'a, State, Message, Theme, Renderer>,
     {
         type State = State;
         type Message = Message;

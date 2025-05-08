@@ -7,30 +7,34 @@ pub mod lib_reloader;
 pub mod lib_reload_events;
 pub mod hot_view;
 pub mod error;
+pub mod program;
+
+use std::any::type_name;
 
 use crossfire::mpmc::{RxBlocking, RxFuture, SharedSenderBRecvF, SharedSenderFRecvB, TxBlocking, TxFuture};
 use hot_lib_reloader::LibReloadObserver;
 use iced::{application::Boot, futures::{SinkExt, Stream}, stream, widget::{button, column, container, text}, Length, Task};
 use once_cell::sync::OnceCell;
-use app::*;
+// use app::*;
+use ui::{self, Names};
 
 
-#[hot_lib_reloader::hot_module(dylib = "ui", lib_dir = "target/debug")]
-mod app {
-    pub use ui::*; 
-    // hot_functions_from_file!("ui/src/lib.rs", ignore_no_mangle = true);
+// #[hot_lib_reloader::hot_module(dylib = "ui", lib_dir = "target/debug")]
+// mod app {
+//     pub use ui::*; 
+//     // hot_functions_from_file!("ui/src/lib.rs", ignore_no_mangle = true);
 
-    #[hot_functions]
-    extern "Rust" {
-        pub fn view(state: &Names) -> Element<Message>;
-        pub fn update(state: &mut Names, message: ui::Message) -> Task<ui::Message>;
-    }
+//     #[hot_functions]
+//     extern "Rust" {
+//         pub fn view(state: &Names) -> Element<Message>;
+//         pub fn update(state: &mut Names, message: ui::Message) -> Task<ui::Message>;
+//     }
 
 
 
-    #[lib_change_subscription]
-    pub fn subscribe() -> hot_lib_reloader::LibReloadObserver {}
-}
+//     #[lib_change_subscription]
+//     pub fn subscribe() -> hot_lib_reloader::LibReloadObserver {}
+// }
 
 
 // #[derive(Debug, Clone)]
@@ -193,6 +197,15 @@ mod app {
 //     HotIce::new(lib_observer).run().unwrap();
 // }
 
+fn print_fn_info<T, F>(_factory: F)
+where
+    F: Fn() -> T,
+{
+    println!("Function type: {}", type_name::<F>());
+}
+
 fn main() {
-    hot_ice::application("ui", "ui", Names::new, Names::update, Names::view).run().unwrap();
+    print_fn_info(Names::new);
+
+    hot_ice::hot_application("ui", "ui", Names::new, Names::update, Names::view).run().unwrap();
 }
