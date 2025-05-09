@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::error::HotReloaderError;
 
-#[cfg(feature = "verbose")]
+// #[cfg(feature = "verbose")]
 use log;
 
 /// Manages watches a library (dylib) file, loads it using
@@ -360,11 +360,11 @@ fn watched_and_loaded_library_paths(
                 .replace("{lib_name}", &lib_name)
                 .replace("{load_counter}", &load_counter.to_string())
                 .replace("{pid}", &std::process::id().to_string());
-            #[cfg(feature = "uuid")]
-            {
-                result.replace("{uuid}", &uuid::Uuid::new_v4().to_string())
-            }
-            #[cfg(not(feature = "uuid"))]
+            // #[cfg(feature = "uuid")]
+            // {
+            //     result.replace("{uuid}", &uuid::Uuid::new_v4().to_string())
+            // }
+            // #[cfg(not(feature = "uuid"))]
             {
                 result
             }

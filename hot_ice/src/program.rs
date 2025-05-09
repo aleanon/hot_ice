@@ -1,5 +1,5 @@
-use iced::{theme, window, Element, Executor, Program, Subscription};
-use ui::Task;
+use iced::{Task, theme, window, Element, Executor, Program, Subscription};
+
 
 /// Decorates a [`Program`] with the given title function.
 pub fn with_title<P: Program>(

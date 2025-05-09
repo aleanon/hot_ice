@@ -1,9 +1,8 @@
 mod new_mod;
 
-use iced::{widget::{button, column, container, text_input, row}, window, Length};
-pub use iced::{time, widget::text, Element, Subscription, Task};
+use iced::{widget::{button, column, container, text_input, Container}, window, Length};
+use iced::{time, Element, Subscription, Task};
 use new_mod::NewStruct;
-use serde::{Deserialize, Serialize};
 
 
 #[derive(Debug, Clone)]
@@ -38,7 +37,7 @@ impl Names {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::UpdateName(name) => self.name = name,
-            Message::UpdateOtherName(name) => self.name = name,
+            Message::UpdateOtherName(name) => self.other_name = name,
             Message::Close => return window::get_latest().and_then(window::close),
             Message::NewModMessage(message) => return self.new_struct.update(message).map(Message::NewModMessage),
             Message::None => {}
@@ -52,7 +51,9 @@ impl Names {
             text_input("Enter name", &self.name)
                 .on_input(Message::UpdateName).size(40),
             text_input("Enter name", &self.other_name)
-                .on_input(Message::UpdateOtherName).size(40),
+                .on_input(Message::UpdateOtherName).size(80),
+            button("exit").on_press(Message::Close),
+            button("exit").on_press(Message::Close),
             button("exit").on_press(Message::Close),
             button("exit").on_press(Message::Close),
             button("exit").on_press(Message::Close),

@@ -7,13 +7,4 @@ edition = "2021"
 [dependencies]
 # deps = { path = "../deps" }
 ui = { path = "../ui" }
-iced.workspace = true
-hot-lib-reloader = { version = "0.7.0" }
-once_cell = { workspace = true }
-crossfire = "1.0.1"
-libloading = "^0.8"
-log = "^0.4"
-notify = "^6"
-notify-debouncer-full = "0.3.1"
-thiserror = "*"
-crc32fast = "1.3.2"
+hot_ice = { path = "../hot_ice" }

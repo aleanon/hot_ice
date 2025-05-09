@@ -3,7 +3,7 @@ cargo-features = ["profile-rustflags"]
 [workspace]
 version = "0.1.0"
 edition = "2021"
-members = ["ui", "reloadable"]
+members = ["ui", "reloadable", "hot_ice"]
 
 
 [profile.dev]
