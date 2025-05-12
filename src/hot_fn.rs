@@ -1,0 +1,168 @@
+use std::{any::type_name, marker::PhantomData};
+
+// use iced::{application::{Update, View}, Element, Task};
+// use ferrishot_iced_core as iced_core;
+// use ferrishot_iced_winit as iced_winit;
+
+pub trait HotFn {
+    fn module(&self) -> &'static str;
+
+    fn function_name(&self) -> &'static str;
+}
+
+use iced_core::Element;
+use iced_winit::runtime::Task;
+
+use crate::{hot_ice::{Update, View}, reloader::LIB_RELOADER};
+
+pub struct HotView<F, State, Message, Theme, Renderer> {
+    module: &'static str,
+    function_name: &'static str,
+    function: F,
+    _state: PhantomData<State>,
+    _message: PhantomData<Message>,
+    _theme: PhantomData<Theme>,
+    _renderer: PhantomData<Renderer>,
+}
+
+
+impl<F, State, Message, Theme, Renderer> HotView<F, State, Message, Theme, Renderer> 
+where 
+    F: for<'a> View<'a, State, Message, Theme, Renderer>,
+    State: 'static {
+
+    pub fn new(function: F) -> Self {
+        let type_name = type_name::<F>();
+        let mut iterator = type_name.split("::");
+        let module = iterator.next().unwrap();
+        let function_name = iterator.last().unwrap();
+
+        Self {
+            function,
+            function_name,
+            module,
+            _message: PhantomData,
+            _state: PhantomData,
+            _theme: PhantomData,
+            _renderer: PhantomData,
+        }
+    }
+
+    pub fn view<'a>(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
+        if let Some(lock) = LIB_RELOADER.get()
+            .and_then(|map| map.get(&self.module)) {
+
+            if let Ok(lib) = lock.try_lock() {
+                match unsafe{lib.get_symbol::<fn(&'a State)->Element<'a, Message, Theme, Renderer>>(&self.function_name.as_bytes())} {
+                    Ok(function) => return function(&state),
+                    Err(_) => {
+                        println!("Unable to load function \"{}\"", self.function_name);
+                    }
+                }
+            }
+        }
+        self.function.view(state).into()
+    }
+}
+
+impl<F, State, Message, Theme, Renderer> HotFn for HotView<F, State, Message, Theme, Renderer>
+where 
+    F: for<'a> View<'a, State, Message, Theme, Renderer> 
+{
+    fn module(&self) -> &'static str {
+        self.module
+    }
+
+    fn function_name(&self) -> &'static str {
+        self.function_name
+    }
+}
+
+impl<'a, F, State, Message, Theme, Renderer, Widget>
+    View<'a, State, Message, Theme, Renderer> for HotView<F, State, Message, Theme, Renderer>
+where
+    F: Fn(&'a State) -> Widget,
+    State: 'static,
+    Widget: Into<Element<'a, Message, Theme, Renderer>>,
+{
+    fn view(
+        &self,
+        state: &'a State,
+    ) -> impl Into<Element<'a, Message, Theme, Renderer>> {
+        (self.function)(state)
+    }
+}
+
+
+pub struct HotUpdate<F, State, Message> {
+    module: &'static str,
+    function_name: &'static str,
+    function: F,
+    _state: PhantomData<State>,
+    _message: PhantomData<Message>,
+}
+
+
+impl<F, State, Message> HotUpdate<F, State, Message> 
+where 
+    F: Update<State, Message>,
+    State: 'static {
+
+    pub fn new(function: F) -> Self {
+        let type_name = type_name::<F>();
+        let mut iterator = type_name.split("::");
+        let module = iterator.next().unwrap();
+        let function_name = iterator.last().unwrap();
+
+        Self {
+            function,
+            function_name,
+            module,
+            _message: PhantomData,
+            _state: PhantomData,
+        }
+    }
+
+    pub fn update<'a>(&self, state: &'a mut State, message: Message) -> Task<Message> {
+        if let Some(lock) = LIB_RELOADER.get()
+            .and_then(|map| map.get(&self.module)) {
+
+            if let Ok(lib) = lock.try_lock() {
+                match unsafe{lib.get_symbol::<fn(&'a mut State, Message)->Task<Message>>(&self.function_name.as_bytes())} {
+                    Ok(function) => return function(state, message),
+                    Err(_) => {
+                        println!("Unable to load function: \"{}\"", self.function_name);
+                    }
+                }
+            }
+        }
+        self.function.update(state, message).into()
+    }
+}
+
+impl<F, State, Message> HotFn for HotUpdate<F, State, Message>
+where 
+    F: Update<State, Message>
+{
+    fn module(&self) -> &'static str {
+        self.module
+    }
+
+    fn function_name(&self) -> &'static str {
+        self.function_name
+    }
+}
+
+impl<F, State, Message, C> Update<State, Message> for HotUpdate<F, State, Message>
+where
+    F: Fn(&mut State, Message) -> C,
+    C: Into<Task<Message>>,
+{
+    fn update(
+        &self,
+        state: &mut State,
+        message: Message,
+    ) -> impl Into<Task<Message>> {
+        (self.function)(state, message)
+    }
+}
