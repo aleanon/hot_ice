@@ -209,7 +209,6 @@ impl LibReloader {
                 new_debouncer(debounce, None, tx).expect("creating notify debouncer");
 
             debouncer
-                .watcher()
                 .watch(&lib_file, RecursiveMode::NonRecursive)
                 .expect("watch lib file");
 
@@ -285,7 +284,6 @@ impl LibReloader {
                         }
                         loop {
                             if debouncer
-                                .watcher()
                                 .watch(&lib_file, RecursiveMode::NonRecursive)
                                 .is_ok()
                             {
