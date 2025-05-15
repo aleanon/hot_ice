@@ -1,16 +1,10 @@
-use std::{collections::HashMap, fmt::Debug, fs::File, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
-
-// use ferrishot_iced_core as iced_core;
-// use ferrishot_iced_futures as iced_futures;
-// use ferrishot_iced_widget as iced_widget;
-// use ferrishot_iced_winit as iced_winit;
+use std::{collections::HashMap, fmt::Debug, sync::{Arc, Mutex}};
 
 use crossfire::mpmc::{RxBlocking, RxFuture, SharedSenderBRecvF, SharedSenderFRecvB, TxBlocking, TxFuture};
 use iced_core::{theme::{self, Base}, window, Element, Length, Theme};
 use iced_futures::{futures::Stream, stream, Subscription};
 use iced_widget::{button, column, container, text, themer};
 use iced_winit::{program::Program, runtime::Task};
-// use iced::{futures::Stream, stream, theme::{self, Base}, widget::{button, column, container, text, themer}, window, Element, Length, Program, Task, Theme};
 use once_cell::sync::OnceCell;
 
 use crate::lib_reloader::LibReloader;
@@ -265,27 +259,4 @@ where
             }
         })
     }
-}
-
-pub fn find_workspace_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut current = manifest_dir.as_path();
-    
-    // Go up directories until we find a directory with a Cargo.toml that 
-    // contains [workspace]
-    while let Some(parent) = current.parent() {
-        let workspace_toml = parent.join("Cargo.toml");
-        if workspace_toml.exists() {
-            // Check if this Cargo.toml has a [workspace] section
-            if let Ok(content) = std::fs::read_to_string(&workspace_toml) {
-                if content.contains("[workspace]") {
-                    return parent.to_path_buf();
-                }
-            }
-        }
-        current = parent;
-    }
-    
-    // If we didn't find a workspace root, return the package root
-    manifest_dir
 }

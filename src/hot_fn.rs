@@ -1,14 +1,12 @@
 use std::{any::type_name, marker::PhantomData};
 
-// use iced::{application::{Update, View}, Element, Task};
-// use ferrishot_iced_core as iced_core;
-// use ferrishot_iced_winit as iced_winit;
 
 pub trait HotFn {
     fn module(&self) -> &'static str;
 
     fn function_name(&self) -> &'static str;
 }
+
 
 use iced_core::Element;
 use iced_winit::runtime::Task;
@@ -61,6 +59,7 @@ where
                 }
             }
         }
+        println!("Calling fallback view");
         self.function.view(state).into()
     }
 }
@@ -136,6 +135,7 @@ where
                 }
             }
         }
+        println!("Calling fallback update");
         self.function.update(state, message).into()
     }
 }
