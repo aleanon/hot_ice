@@ -106,9 +106,20 @@ where
     P::Message: Clone {
 
     pub fn run(self) -> Result<(), ()> {
-        let reloader = Reload::new(self.program);
+        let program = Reload::new(self.program);
 
-        Ok(iced_winit::run(reloader, self.settings, Some(self.window)).map_err(|_|())?)
+        #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
+        let program = {
+            iced_debug::init(iced_debug::Metadata {
+                name: P::name(),
+                theme: None,
+                can_time_travel: cfg!(feature = "time-travel"),
+            });
+
+            iced_devtools::attach(program)
+        };
+
+        Ok(iced_winit::run(program, self.settings, Some(self.window)).map_err(|_|())?)
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
