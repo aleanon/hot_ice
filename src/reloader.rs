@@ -149,9 +149,10 @@ pub struct Reloader<P: Program + 'static> {
     state: P::State,
     libraries_reloading: u16,
     update_ch_tx: TxFuture<ReadyToReload, SharedSenderFRecvB>,
+    pop_key: u16,
 }
 
-impl<P> Reloader<P>
+impl<'a, P> Reloader<P>
 where
     P: Program + 'static,
     P::Message: Clone,
@@ -166,6 +167,7 @@ where
             state,
             libraries_reloading: 0,
             update_ch_tx,
+            pop_key: 0,
         };
 
         (reloader, task.map(Message::AppMessage))
@@ -184,6 +186,7 @@ where
             }
             Message::AboutToReload => {
                 self.libraries_reloading += 1;
+                self.pop_key += 1;
                 Task::none()
             }
             Message::SendReadySignal => {
@@ -199,17 +202,20 @@ where
     }
 
     pub fn view(
-        &self,
+        &'a self,
         program: &P,
         window: window::Id,
     ) -> Element<Message<P>, P::Theme, P::Renderer> {
         if self.libraries_reloading == 0 {
             program.view(&self.state, window).map(Message::AppMessage)
         } else {
-            let content =
-                container(pop(text("Reloading...").size(20)).on_show(|_| Message::SendReadySignal))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill);
+            let content = container(
+                pop(text("Reloading...").size(20))
+                    .key(self.pop_key)
+                    .on_show(|_| Message::SendReadySignal),
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill);
 
             let theme = program.theme(&self.state, window);
 
