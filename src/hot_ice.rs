@@ -1,18 +1,30 @@
-use std::{borrow::Cow, collections::HashMap, sync::{Arc, Mutex}, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 // use ferrishot_iced_core as iced_core;
 // use ferrishot_iced_futures as iced_futures;
 // use ferrishot_iced_winit as iced_winit;
 
-use iced_futures::{Executor, Subscription};
-use iced_winit::{graphics::compositor, program::{self, Program}, runtime::Task};
 use iced_core::{theme, window, Element, Font, Settings, Size};
+use iced_futures::{Executor, Subscription};
+use iced_winit::{
+    graphics::compositor,
+    program::{self, Program},
+    runtime::Task,
+};
 
+use crate::{
+    hot_fn::{HotFn, HotUpdate, HotView},
+    lib_reloader::LibReloader,
+    reloader::{
+        ReadyToReload, Reload, ReloadEvent, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
+    },
+};
 
-
-use crate::{hot_fn::{HotFn, HotUpdate, HotView}, lib_reloader::LibReloader, reloader::{ReadyToReload, Reload, ReloadEvent, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL}};
-
-
-pub fn hot_application<State, Message, Theme, Renderer> (
+pub fn hot_application<State, Message, Theme, Renderer>(
     dylib_path: &'static str,
     boot: impl Boot<State, Message>,
     update: impl Update<State, Message>,
@@ -24,12 +36,11 @@ where
     Theme: Default + theme::Base,
     Renderer: iced_core::text::Renderer + compositor::Default,
 {
-
     let hot_view = HotView::new(view);
     let hot_update = HotUpdate::new(update);
 
     initiate_lib_reloaders(&hot_view, &hot_update, dylib_path);
-    
+
     struct Instance<State, Message, Theme, Renderer, Boot, Update, View> {
         boot: Boot,
         update: HotUpdate<Update, State, Message>,
@@ -63,11 +74,7 @@ where
             self.boot.boot()
         }
 
-        fn update(
-            &self,
-            state: &mut Self::State,
-            message: Self::Message,
-        ) -> Task<Self::Message> {
+        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
             self.update.update(state, message)
         }
 
@@ -87,24 +94,24 @@ where
             view: hot_view,
         },
         settings: Settings::default(),
-        window: window::Settings::default()
+        window: window::Settings::default(),
     }
 }
 
-pub struct HotIce<P> where 
-    P: Program {
+pub struct HotIce<P>
+where
+    P: Program,
+{
     program: P,
     settings: Settings,
     window: window::Settings,
 }
 
-
-
 impl<P> HotIce<P>
 where
     P: Program + 'static,
-    P::Message: Clone {
-
+    P::Message: Clone,
+{
     pub fn run(self) -> Result<(), ()> {
         let program = Reload::new(self.program);
 
@@ -119,7 +126,7 @@ where
             iced_devtools::attach(program)
         };
 
-        Ok(iced_winit::run(program, self.settings, Some(self.window)).map_err(|_|())?)
+        Ok(iced_winit::run(program, self.settings, Some(self.window)).map_err(|_| ())?)
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
@@ -254,13 +261,9 @@ where
     pub fn title(
         self,
         title: impl Title<P::State>,
-    ) -> HotIce<
-        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    > {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: program::with_title(self.program, move |state, _window| {
-                title.title(state)
-            }),
+            program: program::with_title(self.program, move |state, _window| title.title(state)),
             settings: self.settings,
             window: self.window,
         }
@@ -270,9 +273,7 @@ where
     pub fn subscription(
         self,
         f: impl Fn(&P::State) -> Subscription<P::Message>,
-    ) -> HotIce<
-        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    > {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
             program: program::with_subscription(self.program, f),
             settings: self.settings,
@@ -284,9 +285,7 @@ where
     pub fn theme(
         self,
         f: impl Fn(&P::State) -> P::Theme,
-    ) -> HotIce<
-        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    > {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
             program: program::with_theme(self.program, move |state, _window| f(state)),
             settings: self.settings,
@@ -298,9 +297,7 @@ where
     pub fn style(
         self,
         f: impl Fn(&P::State, &P::Theme) -> theme::Style,
-    ) -> HotIce<
-        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    > {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
             program: program::with_style(self.program, f),
             settings: self.settings,
@@ -312,13 +309,9 @@ where
     pub fn scale_factor(
         self,
         f: impl Fn(&P::State) -> f64,
-    ) -> HotIce<
-        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    > {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: program::with_scale_factor(self.program, move |state, _window| {
-                f(state)
-            }),
+            program: program::with_scale_factor(self.program, move |state, _window| f(state)),
             settings: self.settings,
             window: self.window,
         }
@@ -327,9 +320,7 @@ where
     /// Sets the executor of the [`Application`].
     pub fn executor<E>(
         self,
-    ) -> HotIce<
-        impl Program<State = P::State, Message = P::Message, Theme = P::Theme>,
-    >
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>>
     where
         E: Executor,
     {
@@ -340,7 +331,6 @@ where
         }
     }
 }
-
 
 /// The logic to initialize the `State` of some [`Application`].
 ///
@@ -415,31 +405,18 @@ where
 /// returns any `Into<Task<Message>>`.
 pub trait Update<State, Message> {
     /// Processes the message and updates the state of the [`Application`].
-    fn update(
-        &self,
-        state: &mut State,
-        message: Message,
-    ) -> impl Into<Task<Message>>;
+    fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>>;
 }
 
 impl<State, Message> Update<State, Message> for () {
-    fn update(
-        &self,
-        _state: &mut State,
-        _message: Message,
-    ) -> impl Into<Task<Message>> {
-    }
+    fn update(&self, _state: &mut State, _message: Message) -> impl Into<Task<Message>> {}
 }
 impl<T, State, Message, C> Update<State, Message> for T
 where
     T: Fn(&mut State, Message) -> C,
     C: Into<Task<Message>>,
 {
-    fn update(
-        &self,
-        state: &mut State,
-        message: Message,
-    ) -> impl Into<Task<Message>> {
+    fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>> {
         self(state, message)
     }
 }
@@ -450,28 +427,25 @@ where
 /// returns any `Into<Element<'_, Message>>`.
 pub trait View<'a, State, Message, Theme, Renderer> {
     /// Produces the widget of the [`Application`].
-    fn view(
-        &self,
-        state: &'a State,
-    ) -> impl Into<Element<'a, Message, Theme, Renderer>>;
+    fn view(&self, state: &'a State) -> impl Into<Element<'a, Message, Theme, Renderer>>;
 }
 
-impl<'a, T, State, Message, Theme, Renderer, Widget>
-    View<'a, State, Message, Theme, Renderer> for T
+impl<'a, T, State, Message, Theme, Renderer, Widget> View<'a, State, Message, Theme, Renderer> for T
 where
     T: Fn(&'a State) -> Widget,
     State: 'static,
     Widget: Into<Element<'a, Message, Theme, Renderer>>,
 {
-    fn view(
-        &self,
-        state: &'a State,
-    ) -> impl Into<Element<'a, Message, Theme, Renderer>> {
+    fn view(&self, state: &'a State) -> impl Into<Element<'a, Message, Theme, Renderer>> {
         self(state)
     }
 }
 
-pub fn initiate_lib_reloaders(hot_view: &impl HotFn, hot_update: &impl HotFn, dylib_path: &'static str) {
+pub fn initiate_lib_reloaders(
+    hot_view: &impl HotFn,
+    hot_update: &impl HotFn,
+    dylib_path: &'static str,
+) {
     let mut lib_reloaders = HashMap::new();
     register_hot_lib(&mut lib_reloaders, hot_view, dylib_path);
     register_hot_lib(&mut lib_reloaders, hot_update, dylib_path);
@@ -479,50 +453,59 @@ pub fn initiate_lib_reloaders(hot_view: &impl HotFn, hot_update: &impl HotFn, dy
     LIB_RELOADER.set(lib_reloaders).ok();
 }
 
+pub fn register_hot_lib(
+    lib_reloaders: &mut HashMap<&'static str, Arc<Mutex<LibReloader>>>,
+    f: &impl HotFn,
+    dylib_path: &'static str,
+) {
+    lib_reloaders.entry(f.module()).or_insert_with(|| {
+        let (_, update_ch_rx) = UPDATE_CHANNEL
+            .get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1))
+            .clone();
+        let (subscription_ch_tx, _) = SUBSCRIPTION_CHANNEL
+            .get_or_init(|| crossfire::mpmc::bounded_tx_blocking_rx_future(1))
+            .clone();
 
-pub fn register_hot_lib(lib_reloaders: &mut HashMap<&'static str, Arc<Mutex<LibReloader>>>, f: &impl HotFn, dylib_path: &'static str)
-{   
-    lib_reloaders.entry(f.module())
-        .or_insert_with(|| {
-            let (_, update_ch_rx) = UPDATE_CHANNEL.get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1)).clone();
-            let (subscription_ch_tx, _) = SUBSCRIPTION_CHANNEL.get_or_init(||crossfire::mpmc::bounded_tx_blocking_rx_future(1)).clone();
+        let mut lib_reloader = LibReloader::new(
+            dylib_path,
+            f.module(),
+            Some(Duration::from_millis(50)),
+            None,
+        )
+        .expect("Unable to create LibReloader");
+        let change_subscriber = lib_reloader.subscribe_to_file_changes();
+        let lib_reloader = Arc::new(Mutex::new(lib_reloader));
+        let lib = lib_reloader.clone();
 
-            let mut lib_reloader = LibReloader::new(dylib_path, f.module(), Some(Duration::from_millis(50)), None).expect("Unable to create LibReloader");
-            let change_subscriber = lib_reloader.subscribe_to_file_changes();
-            let lib_reloader = Arc::new(Mutex::new(lib_reloader));
-            let lib = lib_reloader.clone();
+        std::thread::spawn(move || loop {
+            println!("Waiting for reload");
+            let Ok(_) = change_subscriber.recv() else {
+                panic!("Sub channel closed")
+            };
+            if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
+                println!("{err}")
+            }
 
-            std::thread::spawn(move || {
-                loop {
-                    println!("Waiting for reload");
-                    let Ok(_) = change_subscriber.recv() else {
-                        panic!("Sub channel closed")
-                    };
-                    if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
+            let Ok(ReadyToReload) = update_ch_rx.recv() else {
+                panic!("Update Channel closed")
+            };
+            println!("Reloading lib");
+            loop {
+                if let Ok(mut lib_reloader) = lib.lock() {
+                    if let Err(err) = lib_reloader.update() {
                         println!("{err}")
-                    }
-
-                    let Ok(ReadyToReload) = update_ch_rx.recv() else {
-                        panic!("Update Channel closed")
-                    };
-                    println!("Reloading lib");
-                    loop {
-                        if let Ok(mut lib_reloader) = lib.lock() {
-                            if let Err(err) = lib_reloader.update() {
-                                println!("{err}")
-                            } else {
-                                break;
-                            }
-                        }
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                    println!("Reload complete");
-
-                    if let Err(_) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
-                        panic!("Subscription Channel closed")
+                    } else {
+                        break;
                     }
                 }
-            });
-            lib_reloader
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            println!("Reload complete");
+
+            if let Err(_) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
+                panic!("Subscription Channel closed")
+            }
         });
-} 
+        lib_reloader
+    });
+}

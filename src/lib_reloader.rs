@@ -1,5 +1,4 @@
 ///This file is copied from the hot-lib-reloader crate
-
 use libloading::{Library, Symbol};
 use notify::{RecursiveMode, Watcher};
 use notify_debouncer_full::new_debouncer;

@@ -1,5 +1,6 @@
-///This crate is copied from the hot-lib-reloader crate
+#![cfg(target_os = "macos")]
 
+///This crate is copied from the hot-lib-reloader crate
 use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Stdio};
