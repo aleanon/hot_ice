@@ -1,5 +1,8 @@
-use std::{any::type_name, marker::PhantomData};
-
+use std::{
+    any::type_name,
+    marker::PhantomData,
+    panic::{catch_unwind, AssertUnwindSafe},
+};
 
 pub trait HotFn {
     fn module(&self) -> &'static str;
@@ -7,11 +10,13 @@ pub trait HotFn {
     fn function_name(&self) -> &'static str;
 }
 
-
 use iced_core::Element;
 use iced_winit::runtime::Task;
 
-use crate::{hot_ice::{Update, View}, reloader::LIB_RELOADER};
+use crate::{
+    hot_ice::{Update, View},
+    reloader::LIB_RELOADER,
+};
 
 pub struct HotView<F, State, Message, Theme, Renderer> {
     module: &'static str,
@@ -23,12 +28,11 @@ pub struct HotView<F, State, Message, Theme, Renderer> {
     _renderer: PhantomData<Renderer>,
 }
 
-
-impl<F, State, Message, Theme, Renderer> HotView<F, State, Message, Theme, Renderer> 
-where 
+impl<F, State, Message, Theme, Renderer> HotView<F, State, Message, Theme, Renderer>
+where
     F: for<'a> View<'a, State, Message, Theme, Renderer>,
-    State: 'static {
-
+    State: 'static,
+{
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
         let mut iterator = type_name.split("::");
@@ -47,26 +51,33 @@ where
     }
 
     pub fn view<'a>(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
-        if let Some(lock) = LIB_RELOADER.get()
-            .and_then(|map| map.get(&self.module)) {
-
+        if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.module)) {
             if let Ok(lib) = lock.try_lock() {
-                match unsafe{lib.get_symbol::<fn(&'a State)->Element<'a, Message, Theme, Renderer>>(&self.function_name.as_bytes())} {
-                    Ok(function) => return function(&state),
+                match unsafe {
+                    lib.get_symbol::<fn(&'a State) -> Element<'a, Message, Theme, Renderer>>(
+                        &self.function_name.as_bytes(),
+                    )
+                } {
+                    Ok(function) => match catch_unwind(AssertUnwindSafe(|| function(state))) {
+                        Ok(element) => return element,
+                        Err(_) => {
+                            println!("Hot reloaded \"{}\" paniced", self.function_name);
+                        }
+                    },
                     Err(_) => {
                         println!("Unable to load function \"{}\"", self.function_name);
                     }
                 }
             }
         }
-        println!("Calling fallback view");
+        println!("Calling fallback function");
         self.function.view(state).into()
     }
 }
 
 impl<F, State, Message, Theme, Renderer> HotFn for HotView<F, State, Message, Theme, Renderer>
-where 
-    F: for<'a> View<'a, State, Message, Theme, Renderer> 
+where
+    F: for<'a> View<'a, State, Message, Theme, Renderer>,
 {
     fn module(&self) -> &'static str {
         self.module
@@ -77,21 +88,17 @@ where
     }
 }
 
-impl<'a, F, State, Message, Theme, Renderer, Widget>
-    View<'a, State, Message, Theme, Renderer> for HotView<F, State, Message, Theme, Renderer>
+impl<'a, F, State, Message, Theme, Renderer, Widget> View<'a, State, Message, Theme, Renderer>
+    for HotView<F, State, Message, Theme, Renderer>
 where
     F: Fn(&'a State) -> Widget,
     State: 'static,
     Widget: Into<Element<'a, Message, Theme, Renderer>>,
 {
-    fn view(
-        &self,
-        state: &'a State,
-    ) -> impl Into<Element<'a, Message, Theme, Renderer>> {
+    fn view(&self, state: &'a State) -> impl Into<Element<'a, Message, Theme, Renderer>> {
         (self.function)(state)
     }
 }
-
 
 pub struct HotUpdate<F, State, Message> {
     module: &'static str,
@@ -101,12 +108,12 @@ pub struct HotUpdate<F, State, Message> {
     _message: PhantomData<Message>,
 }
 
-
-impl<F, State, Message> HotUpdate<F, State, Message> 
-where 
+impl<F, State, Message> HotUpdate<F, State, Message>
+where
+    Message: Clone,
     F: Update<State, Message>,
-    State: 'static {
-
+    State: 'static,
+{
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
         let mut iterator = type_name.split("::");
@@ -123,26 +130,39 @@ where
     }
 
     pub fn update<'a>(&self, state: &'a mut State, message: Message) -> Task<Message> {
-        if let Some(lock) = LIB_RELOADER.get()
-            .and_then(|map| map.get(&self.module)) {
-
+        if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.module)) {
             if let Ok(lib) = lock.try_lock() {
-                match unsafe{lib.get_symbol::<fn(&'a mut State, Message)->Task<Message>>(&self.function_name.as_bytes())} {
-                    Ok(function) => return function(state, message),
+                match unsafe {
+                    lib.get_symbol::<fn(&'a mut State, Message) -> Task<Message>>(
+                        &self.function_name.as_bytes(),
+                    )
+                } {
+                    Ok(function) => {
+                        let state_ptr = state as *mut State;
+                        let message_clone = message.clone();
+                        match catch_unwind(AssertUnwindSafe(move || {
+                            function(unsafe { &mut *state_ptr }, message_clone)
+                        })) {
+                            Ok(task) => return task,
+                            Err(_) => {
+                                println!("Hot reloaded \"{}\" paniced", self.function_name);
+                            }
+                        }
+                    }
                     Err(_) => {
                         println!("Unable to load function: \"{}\"", self.function_name);
                     }
                 }
             }
         }
-        println!("Calling fallback update");
+        println!("Calling fallback function");
         self.function.update(state, message).into()
     }
 }
 
 impl<F, State, Message> HotFn for HotUpdate<F, State, Message>
-where 
-    F: Update<State, Message>
+where
+    F: Update<State, Message>,
 {
     fn module(&self) -> &'static str {
         self.module
@@ -158,11 +178,7 @@ where
     F: Fn(&mut State, Message) -> C,
     C: Into<Task<Message>>,
 {
-    fn update(
-        &self,
-        state: &mut State,
-        message: Message,
-    ) -> impl Into<Task<Message>> {
+    fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>> {
         (self.function)(state, message)
     }
 }
