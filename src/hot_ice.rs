@@ -4,9 +4,6 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-// use ferrishot_iced_core as iced_core;
-// use ferrishot_iced_futures as iced_futures;
-// use ferrishot_iced_winit as iced_winit;
 
 use iced_core::{theme, window, Element, Font, Settings, Size};
 use iced_futures::{Executor, Subscription};
@@ -469,7 +466,7 @@ pub fn register_hot_lib(
         let mut lib_reloader = LibReloader::new(
             dylib_path,
             f.module(),
-            Some(Duration::from_millis(50)),
+            Some(Duration::from_millis(10)),
             None,
         )
         .expect("Unable to create LibReloader");
@@ -478,7 +475,6 @@ pub fn register_hot_lib(
         let lib = lib_reloader.clone();
 
         std::thread::spawn(move || loop {
-            println!("Waiting for reload");
             let Ok(_) = change_subscriber.recv() else {
                 panic!("Sub channel closed")
             };
@@ -489,7 +485,6 @@ pub fn register_hot_lib(
             let Ok(ReadyToReload) = update_ch_rx.recv() else {
                 panic!("Update Channel closed")
             };
-            println!("Reloading lib");
             loop {
                 if let Ok(mut lib_reloader) = lib.lock() {
                     if let Err(err) = lib_reloader.update() {
@@ -500,7 +495,6 @@ pub fn register_hot_lib(
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
-            println!("Reload complete");
 
             if let Err(_) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
                 panic!("Subscription Channel closed")

@@ -1,6 +1,6 @@
 ///This file is copied from the hot-lib-reloader crate
 use libloading::{Library, Symbol};
-use notify::{RecursiveMode, Watcher};
+use notify::RecursiveMode;
 use notify_debouncer_full::new_debouncer;
 use std::fs;
 use std::path::{Path, PathBuf};
