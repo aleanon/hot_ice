@@ -58,7 +58,7 @@ where
                         &self.function_name.as_bytes(),
                     )
                 } {
-                    Ok(function) => match catch_unwind(AssertUnwindSafe(|| function(state))) {
+                    Ok(view) => match catch_unwind(AssertUnwindSafe(|| view(state))) {
                         Ok(element) => return element,
                         Err(_) => {
                             println!("Hot reloaded \"{}\" paniced", self.function_name);
@@ -144,7 +144,8 @@ where
                             function(unsafe { &mut *state_ptr }, message_clone)
                         })) {
                             Ok(task) => return task,
-                            Err(_) => {
+                            Err(err) => {
+                                std::mem::forget(err);
                                 println!("Hot reloaded \"{}\" paniced", self.function_name);
                             }
                         }
