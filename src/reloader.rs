@@ -22,10 +22,12 @@ pub static SUBSCRIPTION_CHANNEL: OnceCell<(
     TxBlocking<ReloadEvent, SharedSenderBRecvF>,
     RxFuture<ReloadEvent, SharedSenderBRecvF>,
 )> = OnceCell::new();
+
 pub static UPDATE_CHANNEL: OnceCell<(
     TxFuture<ReadyToReload, SharedSenderFRecvB>,
     RxBlocking<ReadyToReload, SharedSenderFRecvB>,
 )> = OnceCell::new();
+
 pub static LIB_RELOADER: OnceCell<HashMap<&'static str, Arc<Mutex<LibReloader>>>> = OnceCell::new();
 
 pub struct Reload<P>
@@ -104,7 +106,7 @@ where
 {
     None,
     AboutToReload,
-    ReloadFinished,
+    ReloadComplete,
     SendReadySignal,
     AppMessage(P::Message),
 }
@@ -119,7 +121,7 @@ where
             Self::AppMessage(message) => Self::AppMessage(message.clone()),
             Self::SendReadySignal => Self::SendReadySignal,
             Self::AboutToReload => Self::AboutToReload,
-            Self::ReloadFinished => Self::ReloadFinished,
+            Self::ReloadComplete => Self::ReloadComplete,
             Self::None => Self::None,
         }
     }
@@ -131,7 +133,7 @@ impl<P: Program> Debug for Message<P> {
             Self::AppMessage(message) => message.fmt(f),
             Self::SendReadySignal => write!(f, "Self::SendReadySignal"),
             Self::AboutToReload => write!(f, "Self::Reloading"),
-            Self::ReloadFinished => write!(f, "Self::ReloadFinished"),
+            Self::ReloadComplete => write!(f, "Self::ReloadFinished"),
             Self::None => write!(f, "Self::None"),
         }
     }
@@ -193,7 +195,7 @@ where
                 let sender = self.update_ch_tx.clone();
                 Task::future(async move { sender.send(ReadyToReload).await }).discard()
             }
-            Message::ReloadFinished => {
+            Message::ReloadComplete => {
                 self.libraries_reloading -= 1;
                 Task::none()
             }
@@ -263,7 +265,7 @@ where
                         }
                     }
                     ReloadEvent::ReloadComplete => {
-                        if let Err(err) = output.try_send(Message::ReloadFinished) {
+                        if let Err(err) = output.try_send(Message::ReloadComplete) {
                             println!("Failed to send reload complete message: {err}")
                         }
                     }
