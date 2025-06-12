@@ -5,9 +5,7 @@ use std::{
 };
 
 pub trait HotFn {
-    fn module(&self) -> &'static str;
-
-    fn function_name(&self) -> &'static str;
+    fn library_name(&self) -> &'static str;
 }
 
 use iced_core::Element;
@@ -19,7 +17,7 @@ use crate::{
 };
 
 pub struct HotView<F, State, Message, Theme, Renderer> {
-    module: &'static str,
+    lib_name: &'static str,
     function_name: &'static str,
     function: F,
     _state: PhantomData<State>,
@@ -36,13 +34,13 @@ where
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
         let mut iterator = type_name.split("::");
-        let module = iterator.next().unwrap();
+        let lib_name = iterator.next().unwrap();
         let function_name = iterator.last().unwrap();
 
         Self {
             function,
             function_name,
-            module,
+            lib_name,
             _message: PhantomData,
             _state: PhantomData,
             _theme: PhantomData,
@@ -51,7 +49,7 @@ where
     }
 
     pub fn view<'a>(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
-        if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.module)) {
+        if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.lib_name)) {
             if let Ok(lib) = lock.try_lock() {
                 match unsafe {
                     lib.get_symbol::<fn(&'a State) -> Element<'a, Message, Theme, Renderer>>(
@@ -70,7 +68,6 @@ where
                 }
             }
         }
-        println!("Calling fallback function");
         self.function.view(state).into()
     }
 }
@@ -79,12 +76,8 @@ impl<F, State, Message, Theme, Renderer> HotFn for HotView<F, State, Message, Th
 where
     F: for<'a> View<'a, State, Message, Theme, Renderer>,
 {
-    fn module(&self) -> &'static str {
-        self.module
-    }
-
-    fn function_name(&self) -> &'static str {
-        self.function_name
+    fn library_name(&self) -> &'static str {
+        self.lib_name
     }
 }
 
@@ -101,7 +94,7 @@ where
 }
 
 pub struct HotUpdate<F, State, Message> {
-    module: &'static str,
+    lib_name: &'static str,
     function_name: &'static str,
     function: F,
     _state: PhantomData<State>,
@@ -117,20 +110,20 @@ where
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
         let mut iterator = type_name.split("::");
-        let module = iterator.next().unwrap();
+        let lib_name = iterator.next().unwrap();
         let function_name = iterator.last().unwrap();
 
         Self {
             function,
             function_name,
-            module,
+            lib_name,
             _message: PhantomData,
             _state: PhantomData,
         }
     }
 
     pub fn update<'a>(&self, state: &'a mut State, message: Message) -> Task<Message> {
-        if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.module)) {
+        if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.lib_name)) {
             if let Ok(lib) = lock.try_lock() {
                 match unsafe {
                     lib.get_symbol::<fn(&'a mut State, Message) -> Task<Message>>(
@@ -156,7 +149,6 @@ where
                 }
             }
         }
-        println!("Calling fallback function");
         self.function.update(state, message).into()
     }
 }
@@ -165,12 +157,8 @@ impl<F, State, Message> HotFn for HotUpdate<F, State, Message>
 where
     F: Update<State, Message>,
 {
-    fn module(&self) -> &'static str {
-        self.module
-    }
-
-    fn function_name(&self) -> &'static str {
-        self.function_name
+    fn library_name(&self) -> &'static str {
+        self.lib_name
     }
 }
 

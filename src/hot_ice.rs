@@ -11,6 +11,7 @@ use iced_winit::{
     graphics::compositor,
     program::{self, Program},
     runtime::Task,
+    Error,
 };
 
 use crate::{
@@ -109,7 +110,7 @@ where
     P: Program + 'static,
     P::Message: Clone,
 {
-    pub fn run(self) -> Result<(), ()> {
+    pub fn run(self) -> Result<(), Error> {
         let program = Reload::new(self.program);
 
         #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
@@ -123,7 +124,7 @@ where
             iced_devtools::attach(program)
         };
 
-        Ok(iced_winit::run(program, self.settings, Some(self.window)).map_err(|_| ())?)
+        iced_winit::run(program, self.settings, Some(self.window))
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
@@ -455,7 +456,7 @@ pub fn register_hot_lib(
     f: &impl HotFn,
     dylib_path: &'static str,
 ) {
-    lib_reloaders.entry(f.module()).or_insert_with(|| {
+    lib_reloaders.entry(f.library_name()).or_insert_with(|| {
         let (_, update_ch_rx) = UPDATE_CHANNEL
             .get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1))
             .clone();
@@ -465,7 +466,7 @@ pub fn register_hot_lib(
 
         let mut lib_reloader = LibReloader::new(
             dylib_path,
-            f.module(),
+            f.library_name(),
             Some(Duration::from_millis(10)),
             None,
         )
