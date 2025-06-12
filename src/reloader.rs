@@ -207,7 +207,7 @@ where
         &'a self,
         program: &P,
         window: window::Id,
-    ) -> Element<Message<P>, P::Theme, P::Renderer> {
+    ) -> Element<'a, Message<P>, P::Theme, P::Renderer> {
         if self.libraries_reloading == 0 {
             program.view(&self.state, window).map(Message::AppMessage)
         } else {
