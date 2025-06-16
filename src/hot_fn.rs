@@ -131,10 +131,10 @@ where
                     )
                 } {
                     Ok(function) => {
-                        let state_ptr = state as *mut State;
-                        let message_clone = message.clone();
+                        let state = state as *mut State;
+                        let message = message.clone();
                         match catch_unwind(AssertUnwindSafe(move || {
-                            function(unsafe { &mut *state_ptr }, message_clone)
+                            function(unsafe { &mut *state }, message)
                         })) {
                             Ok(task) => return task,
                             Err(err) => {
@@ -143,9 +143,7 @@ where
                             }
                         }
                     }
-                    Err(_) => {
-                        println!("Unable to load function: \"{}\"", self.function_name);
-                    }
+                    Err(_) => {}
                 }
             }
         }
