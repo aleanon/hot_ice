@@ -317,12 +317,12 @@ impl LibReloader {
         }
     }
 
-    /// Helper to log from the macro without requiring the user to have the log
-    /// crate around
-    #[doc(hidden)]
-    pub fn log_info(what: impl std::fmt::Display) {
-        log::info!("{}", what);
-    }
+    // Helper to log from the macro without requiring the user to have the log
+    // crate around
+    // #[doc(hidden)]
+    // pub fn log_info(what: impl std::fmt::Display) {
+    //     log::info!("{}", what);
+    // }
 }
 
 /// Deletes the currently loaded lib file if it exists

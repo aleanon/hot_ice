@@ -131,10 +131,10 @@ impl<P: Program> Debug for Message<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AppMessage(message) => message.fmt(f),
-            Self::SendReadySignal => write!(f, "Self::SendReadySignal"),
-            Self::AboutToReload => write!(f, "Self::Reloading"),
-            Self::ReloadComplete => write!(f, "Self::ReloadFinished"),
-            Self::None => write!(f, "Self::None"),
+            Self::SendReadySignal => write!(f, "SendReadySignal"),
+            Self::AboutToReload => write!(f, "AboutToReload"),
+            Self::ReloadComplete => write!(f, "ReloadComplete"),
+            Self::None => write!(f, "None"),
         }
     }
 }
@@ -233,9 +233,10 @@ where
     }
 
     pub fn subscription(&self, program: &P) -> Subscription<Message<P>> {
-        let subscription = program.subscription(&self.state).map(Message::AppMessage);
-        let listen_for_lib_changes = Subscription::run(Self::listen_for_lib_change);
-        Subscription::batch([subscription, listen_for_lib_changes])
+        Subscription::batch([
+            program.subscription(&self.state).map(Message::AppMessage),
+            Subscription::run(Self::listen_for_lib_change),
+        ])
     }
 
     pub fn title(&self, program: &P, window: window::Id) -> String {
