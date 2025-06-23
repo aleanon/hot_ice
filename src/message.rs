@@ -42,6 +42,8 @@ impl HotMessage {
     }
 }
 
+unsafe impl Send for HotMessage {}
+
 impl Clone for HotMessage {
     fn clone(&self) -> Self {
         Self(self.0.clone_box())

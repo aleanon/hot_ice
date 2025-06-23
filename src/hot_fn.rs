@@ -1,5 +1,5 @@
 use std::{
-    any::type_name,
+    any::{type_name, TypeId},
     marker::PhantomData,
     panic::{catch_unwind, AssertUnwindSafe},
 };
@@ -14,6 +14,7 @@ use iced_winit::runtime::Task;
 use crate::{
     hot_ice::{Update, View},
     reloader::LIB_RELOADER,
+    DynMessage, HotMessage,
 };
 
 pub struct HotView<F, State, Message, Theme, Renderer> {
@@ -30,6 +31,7 @@ impl<F, State, Message, Theme, Renderer> HotView<F, State, Message, Theme, Rende
 where
     F: for<'a> View<'a, State, Message, Theme, Renderer>,
     State: 'static,
+    Message: DynMessage,
 {
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
@@ -48,11 +50,15 @@ where
         }
     }
 
-    pub fn view<'a>(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
+    pub fn view<'a>(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer>
+// where
+    //     Renderer: iced_core::Renderer + 'a,
+    //     Theme: 'a,
+    {
         if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.lib_name)) {
             if let Ok(lib) = lock.try_lock() {
                 match unsafe {
-                    lib.get_symbol::<fn(&'a State) -> Element<'a, Message, Theme, Renderer>>(
+                    lib.get_symbol::<fn(&State) -> Element<Message, Theme, Renderer>>(
                         &self.function_name.as_bytes(),
                     )
                 } {
@@ -68,7 +74,7 @@ where
                 }
             }
         }
-        self.function.view(state).into()
+        self.function.view(state)
     }
 }
 
@@ -87,9 +93,12 @@ where
     F: Fn(&'a State) -> Widget,
     State: 'static,
     Widget: Into<Element<'a, Message, Theme, Renderer>>,
+    Message: Send + std::fmt::Debug + Clone + 'static,
+    Renderer: iced_core::Renderer + 'a,
+    Theme: 'a,
 {
-    fn view(&self, state: &'a State) -> impl Into<Element<'a, Message, Theme, Renderer>> {
-        (self.function)(state)
+    fn view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
+        (self.function)(state).into()
     }
 }
 
@@ -103,7 +112,7 @@ pub struct HotUpdate<F, State, Message> {
 
 impl<F, State, Message> HotUpdate<F, State, Message>
 where
-    Message: Clone,
+    Message: DynMessage + Clone,
     F: Update<State, Message>,
     State: 'static,
 {
@@ -117,12 +126,12 @@ where
             function,
             function_name,
             lib_name,
-            _message: PhantomData,
             _state: PhantomData,
+            _message: PhantomData,
         }
     }
 
-    pub fn update<'a>(&self, state: &'a mut State, message: Message) -> Task<Message> {
+    pub fn update<'a>(&self, state: &'a mut State, message: HotMessage) -> Task<HotMessage> {
         if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.lib_name)) {
             if let Ok(lib) = lock.try_lock() {
                 match unsafe {
@@ -134,9 +143,9 @@ where
                         let state = state as *mut State;
                         let message = message.clone();
                         match catch_unwind(AssertUnwindSafe(move || {
-                            function(unsafe { &mut *state }, message)
+                            function(unsafe { &mut *state }, message.into_message())
                         })) {
-                            Ok(task) => return task,
+                            Ok(task) => return task.map(DynMessage::into_hot_message),
                             Err(err) => {
                                 std::mem::forget(err);
                                 println!("Hot reloaded \"{}\" paniced", self.function_name);
@@ -147,7 +156,8 @@ where
                 }
             }
         }
-        self.function.update(state, message).into()
+        let task: Task<Message> = self.function.update(state, message.into_message()).into();
+        task.map(DynMessage::into_hot_message)
     }
 }
 

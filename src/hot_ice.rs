@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
+    fmt::Debug,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -20,6 +21,7 @@ use crate::{
     reloader::{
         ReadyToReload, Reload, ReloadEvent, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
     },
+    DynMessage, HotMessage,
 };
 
 pub fn hot_application<State, Message, Theme, Renderer>(
@@ -27,37 +29,38 @@ pub fn hot_application<State, Message, Theme, Renderer>(
     boot: impl Boot<State, Message>,
     update: impl Update<State, Message>,
     view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>,
-) -> HotIce<impl Program<State = State, Message = Message, Theme = Theme>>
+) -> HotIce<impl Program<State = State, Message = HotMessage, Theme = Theme>>
 where
     State: 'static,
     Message: Send + std::fmt::Debug + 'static + Clone,
-    Theme: Default + theme::Base,
-    Renderer: iced_core::text::Renderer + compositor::Default,
+    Theme: Default + theme::Base + 'static,
+    Renderer: iced_core::text::Renderer + compositor::Default + 'static,
 {
     let hot_view = HotView::new(view);
     let hot_update = HotUpdate::new(update);
 
     initiate_lib_reloaders(&hot_view, &hot_update, dylib_path);
 
-    struct Instance<State, Message, Theme, Renderer, Boot, Update, View> {
+    struct Instance<'a, State, Message, Theme, Renderer, Boot, Update, View> {
         boot: Boot,
         update: HotUpdate<Update, State, Message>,
         view: HotView<View, State, Message, Theme, Renderer>,
+        _marker: std::marker::PhantomData<&'a ()>,
     }
 
-    impl<State, Message, Theme, Renderer, Boot, Update, View> Program
-        for Instance<State, Message, Theme, Renderer, Boot, Update, View>
+    impl<'b, State, Message, Theme, Renderer, Boot, Update, View> Program
+        for Instance<'b, State, Message, Theme, Renderer, Boot, Update, View>
     where
         State: 'static,
-        Message: Send + std::fmt::Debug + 'static + Clone,
-        Theme: Default + theme::Base,
-        Renderer: iced_core::text::Renderer + compositor::Default,
+        Message: DynMessage + Clone,
+        Theme: Default + theme::Base + 'static,
+        Renderer: iced_core::text::Renderer + compositor::Default + 'static,
         Boot: self::Boot<State, Message>,
         Update: self::Update<State, Message>,
         View: for<'a> self::View<'a, State, Message, Theme, Renderer>,
     {
         type State = State;
-        type Message = Message;
+        type Message = HotMessage;
         type Theme = Theme;
         type Renderer = Renderer;
         type Executor = iced_futures::backend::default::Executor;
@@ -68,7 +71,7 @@ where
             name.split("::").next().unwrap_or("a_cool_application")
         }
 
-        fn boot(&self) -> (State, Task<Message>) {
+        fn boot(&self) -> (State, Task<Self::Message>) {
             self.boot.boot()
         }
 
@@ -81,7 +84,7 @@ where
             state: &'a Self::State,
             _window: window::Id,
         ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
-            self.view.view(state).into()
+            self.view.view(state).map(DynMessage::into_hot_message)
         }
     }
 
@@ -90,6 +93,7 @@ where
             boot,
             update: hot_update,
             view: hot_view,
+            _marker: std::marker::PhantomData,
         },
         settings: Settings::default(),
         window: window::Settings::default(),
@@ -340,18 +344,30 @@ where
 /// that return a [`Task`].
 pub trait Boot<State, Message> {
     /// Initializes the [`Application`] state.
-    fn boot(&self) -> (State, Task<Message>);
+    fn boot(&self) -> (State, Task<HotMessage>);
 }
 
 impl<T, C, State, Message> Boot<State, Message> for T
 where
     T: Fn() -> C,
     C: IntoBoot<State, Message>,
+    Message: DynMessage,
 {
-    fn boot(&self) -> (State, Task<Message>) {
-        self().into_boot()
+    fn boot(&self) -> (State, Task<HotMessage>) {
+        let (state, task) = self().into_boot();
+        (state, task.map(DynMessage::into_hot_message))
     }
 }
+
+// impl<T, C, State> Boot<State, HotMessage> for T
+// where
+//     T: Fn() -> C,
+//     C: IntoBoot<State, HotMessage>,
+// {
+//     fn boot(&self) -> (State, Task<HotMessage>) {
+//         self().into_boot()
+//     }
+// }
 
 /// The initial state of some [`Application`].
 pub trait IntoBoot<State, Message> {
@@ -425,7 +441,7 @@ where
 /// returns any `Into<Element<'_, Message>>`.
 pub trait View<'a, State, Message, Theme, Renderer> {
     /// Produces the widget of the [`Application`].
-    fn view(&self, state: &'a State) -> impl Into<Element<'a, Message, Theme, Renderer>>;
+    fn view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer>;
 }
 
 impl<'a, T, State, Message, Theme, Renderer, Widget> View<'a, State, Message, Theme, Renderer> for T
@@ -433,9 +449,12 @@ where
     T: Fn(&'a State) -> Widget,
     State: 'static,
     Widget: Into<Element<'a, Message, Theme, Renderer>>,
+    Message: Send + Debug + Clone + 'static,
+    Theme: 'a,
+    Renderer: iced_core::Renderer + 'a,
 {
-    fn view(&self, state: &'a State) -> impl Into<Element<'a, Message, Theme, Renderer>> {
-        self(state)
+    fn view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
+        self(state).into()
     }
 }
 
