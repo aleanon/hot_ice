@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
-    fmt::Debug,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -16,23 +15,27 @@ use iced_winit::{
 };
 
 use crate::{
-    hot_fn::{HotFn, HotUpdate, HotView},
+    boot,
+    hot_fn::HotFn,
     lib_reloader::LibReloader,
     reloader::{
         ReadyToReload, Reload, ReloadEvent, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
     },
+    update::{self, HotUpdate},
+    view::{self, HotView},
     DynMessage, HotMessage,
 };
 
-pub fn hot_application<State, Message, Theme, Renderer>(
+pub fn hot_application<State, UpdateMessage, ViewMessage, Theme, Renderer>(
     dylib_path: &'static str,
-    boot: impl Boot<State, Message>,
-    update: impl Update<State, Message>,
-    view: impl for<'a> self::View<'a, State, Message, Theme, Renderer>,
+    boot: impl boot::Boot<State>,
+    update: impl update::Update<State, UpdateMessage>,
+    view: impl for<'a> view::View<'a, State, ViewMessage, Theme, Renderer>,
 ) -> HotIce<impl Program<State = State, Message = HotMessage, Theme = Theme>>
 where
     State: 'static,
-    Message: Send + std::fmt::Debug + 'static + Clone,
+    UpdateMessage: DynMessage + Clone,
+    ViewMessage: DynMessage + Clone,
     Theme: Default + theme::Base + 'static,
     Renderer: iced_core::text::Renderer + compositor::Default + 'static,
 {
@@ -41,23 +44,23 @@ where
 
     initiate_lib_reloaders(&hot_view, &hot_update, dylib_path);
 
-    struct Instance<'a, State, Message, Theme, Renderer, Boot, Update, View> {
+    struct Instance<State, UpdateMessage, ViewMessage, Theme, Renderer, Boot, Update, View> {
         boot: Boot,
-        update: HotUpdate<Update, State, Message>,
-        view: HotView<View, State, Message, Theme, Renderer>,
-        _marker: std::marker::PhantomData<&'a ()>,
+        update: HotUpdate<Update, State, UpdateMessage>,
+        view: HotView<View, State, ViewMessage, Theme, Renderer>,
     }
 
-    impl<'b, State, Message, Theme, Renderer, Boot, Update, View> Program
-        for Instance<'b, State, Message, Theme, Renderer, Boot, Update, View>
+    impl<State, UpdateMessage, ViewMessage, Theme, Renderer, Boot, Update, View> Program
+        for Instance<State, UpdateMessage, ViewMessage, Theme, Renderer, Boot, Update, View>
     where
         State: 'static,
-        Message: DynMessage + Clone,
+        UpdateMessage: DynMessage + Clone,
+        ViewMessage: DynMessage + Clone,
         Theme: Default + theme::Base + 'static,
         Renderer: iced_core::text::Renderer + compositor::Default + 'static,
-        Boot: self::Boot<State, Message>,
-        Update: self::Update<State, Message>,
-        View: for<'a> self::View<'a, State, Message, Theme, Renderer>,
+        Boot: boot::Boot<State>,
+        Update: update::Update<State, UpdateMessage>,
+        View: for<'a> view::View<'a, State, ViewMessage, Theme, Renderer>,
     {
         type State = State;
         type Message = HotMessage;
@@ -68,7 +71,7 @@ where
         fn name() -> &'static str {
             let name = std::any::type_name::<State>();
 
-            name.split("::").next().unwrap_or("a_cool_application")
+            name.split("::").next().unwrap_or("an_ice_hot_application")
         }
 
         fn boot(&self) -> (State, Task<Self::Message>) {
@@ -93,7 +96,6 @@ where
             boot,
             update: hot_update,
             view: hot_view,
-            _marker: std::marker::PhantomData,
         },
         settings: Settings::default(),
         window: window::Settings::default(),
@@ -111,7 +113,7 @@ where
 
 impl<P> HotIce<P>
 where
-    P: Program + 'static,
+    P: Program<Message = HotMessage> + 'static,
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {
@@ -274,10 +276,10 @@ where
     /// Sets the subscription logic of the [`Application`].
     pub fn subscription(
         self,
-        f: impl Fn(&P::State) -> Subscription<P::Message>,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+        f: impl HotSubscription<P::State>,
+    ) -> HotIce<impl Program<State = P::State, Message = HotMessage, Theme = P::Theme>> {
         HotIce {
-            program: program::with_subscription(self.program, f),
+            program: with_subscription(self.program, f),
             settings: self.settings,
             window: self.window,
         }
@@ -334,59 +336,6 @@ where
     }
 }
 
-/// The logic to initialize the `State` of some [`Application`].
-///
-/// This trait is implemented for both `Fn() -> State` and
-/// `Fn() -> (State, Task<Message>)`.
-///
-/// In practice, this means that [`application`] can both take
-/// simple functions like `State::default` and more advanced ones
-/// that return a [`Task`].
-pub trait Boot<State, Message> {
-    /// Initializes the [`Application`] state.
-    fn boot(&self) -> (State, Task<HotMessage>);
-}
-
-impl<T, C, State, Message> Boot<State, Message> for T
-where
-    T: Fn() -> C,
-    C: IntoBoot<State, Message>,
-    Message: DynMessage,
-{
-    fn boot(&self) -> (State, Task<HotMessage>) {
-        let (state, task) = self().into_boot();
-        (state, task.map(DynMessage::into_hot_message))
-    }
-}
-
-// impl<T, C, State> Boot<State, HotMessage> for T
-// where
-//     T: Fn() -> C,
-//     C: IntoBoot<State, HotMessage>,
-// {
-//     fn boot(&self) -> (State, Task<HotMessage>) {
-//         self().into_boot()
-//     }
-// }
-
-/// The initial state of some [`Application`].
-pub trait IntoBoot<State, Message> {
-    /// Turns some type into the initial state of some [`Application`].
-    fn into_boot(self) -> (State, Task<Message>);
-}
-
-impl<State, Message> IntoBoot<State, Message> for State {
-    fn into_boot(self) -> (State, Task<Message>) {
-        (self, Task::none())
-    }
-}
-
-impl<State, Message> IntoBoot<State, Message> for (State, Task<Message>) {
-    fn into_boot(self) -> (State, Task<Message>) {
-        self
-    }
-}
-
 /// The title logic of some [`Application`].
 ///
 /// This trait is implemented both for `&static str` and
@@ -413,48 +362,18 @@ where
     }
 }
 
-/// The update logic of some [`Application`].
-///
-/// This trait allows the [`application`] builder to take any closure that
-/// returns any `Into<Task<Message>>`.
-pub trait Update<State, Message> {
-    /// Processes the message and updates the state of the [`Application`].
-    fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>>;
+pub trait HotSubscription<State> {
+    /// Produces the subscription of the [`Application`].
+    fn subscription(&self, state: &State) -> Subscription<HotMessage>;
 }
 
-impl<State, Message> Update<State, Message> for () {
-    fn update(&self, _state: &mut State, _message: Message) -> impl Into<Task<Message>> {}
-}
-impl<T, State, Message, C> Update<State, Message> for T
+impl<T, State, InputMessage> HotSubscription<State> for T
 where
-    T: Fn(&mut State, Message) -> C,
-    C: Into<Task<Message>>,
+    T: Fn(&State) -> Subscription<InputMessage>,
+    InputMessage: DynMessage,
 {
-    fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>> {
-        self(state, message)
-    }
-}
-
-/// The view logic of some [`Application`].
-///
-/// This trait allows the [`application`] builder to take any closure that
-/// returns any `Into<Element<'_, Message>>`.
-pub trait View<'a, State, Message, Theme, Renderer> {
-    /// Produces the widget of the [`Application`].
-    fn view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer>;
-}
-
-impl<'a, T, State, Message, Theme, Renderer, Widget> View<'a, State, Message, Theme, Renderer> for T
-where
-    T: Fn(&'a State) -> Widget,
-    State: 'static,
-    Widget: Into<Element<'a, Message, Theme, Renderer>>,
-    Message: Send + Debug + Clone + 'static,
-    Theme: 'a,
-    Renderer: iced_core::Renderer + 'a,
-{
-    fn view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
-        self(state).into()
+    fn subscription(&self, state: &State) -> Subscription<HotMessage> {
+        self(state).map(DynMessage::into_hot_message)
     }
 }
 
@@ -522,4 +441,72 @@ pub fn register_hot_lib(
         });
         lib_reloader
     });
+}
+
+pub fn with_subscription<P: Program<Message = HotMessage>>(
+    program: P,
+    f: impl HotSubscription<P::State>,
+) -> impl Program<State = P::State, Message = HotMessage, Theme = P::Theme>
+where
+{
+    struct WithSubscription<P, F> {
+        program: P,
+        subscription: F,
+    }
+
+    impl<P: Program<Message = HotMessage>, F> Program for WithSubscription<P, F>
+    where
+        F: HotSubscription<P::State>,
+    {
+        type State = P::State;
+        type Message = P::Message;
+        type Theme = P::Theme;
+        type Renderer = P::Renderer;
+        type Executor = P::Executor;
+
+        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
+            self.subscription.subscription(state)
+        }
+
+        fn name() -> &'static str {
+            P::name()
+        }
+
+        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+            self.program.boot()
+        }
+
+        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+            self.program.update(state, message)
+        }
+
+        fn view<'a>(
+            &self,
+            state: &'a Self::State,
+            window: window::Id,
+        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+            self.program.view(state, window)
+        }
+
+        fn title(&self, state: &Self::State, window: window::Id) -> String {
+            self.program.title(state, window)
+        }
+
+        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+            self.program.theme(state, window)
+        }
+
+        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
+            self.program.style(state, theme)
+        }
+
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+            self.program.scale_factor(state, window)
+        }
+    }
+
+    WithSubscription {
+        program,
+        subscription: f,
+    }
 }
