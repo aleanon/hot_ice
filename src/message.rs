@@ -1,5 +1,10 @@
 use std::any::{Any, TypeId};
 
+pub enum MessageSource<M> {
+    Static(M),
+    Dynamic(M),
+}
+
 pub trait DynMessage: Send + 'static + std::fmt::Debug {
     fn clone_boxed(&self) -> Box<dyn DynMessage>;
     fn into_hot_message(self) -> HotMessage;

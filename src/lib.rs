@@ -2,8 +2,10 @@ mod boot;
 #[cfg(target_os = "macos")]
 mod codesign;
 mod error;
+// mod hot_application;
 mod hot_fn;
 mod hot_ice;
+// mod hot_program;
 mod lib_reloader;
 mod message;
 mod reloader;

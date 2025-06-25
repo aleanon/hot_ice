@@ -9,3 +9,15 @@ pub enum HotReloaderError {
     #[error("The hot reloadable library has not been loaded. Has it not been built yet?")]
     LibraryNotLoaded,
 }
+
+#[derive(thiserror::Error, Debug)]
+pub enum HotFunctionError {
+    #[error("Could not find function library")]
+    LibraryNotFound,
+    #[error("Could not load function")]
+    FunctionNotFound(&'static str),
+    #[error("Hot function call paniced")]
+    FunctionPaniced(&'static str),
+    #[error("Unable to acquire lock on reloader")]
+    LockAcquisitionError,
+}

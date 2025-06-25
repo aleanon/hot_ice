@@ -10,39 +10,39 @@ use crate::{DynMessage, HotMessage};
 /// In practice, this means that [`application`] can both take
 /// simple functions like `State::default` and more advanced ones
 /// that return a [`Task`].
-pub trait Boot<State> {
+pub trait Boot<State, Message> {
     /// Initializes the [`Application`] state.
-    fn boot(&self) -> (State, Task<HotMessage>);
+    fn boot(&self) -> (State, Task<Message>);
 }
 
-impl<T, C, State> Boot<State> for T
+impl<T, C, State, Message> Boot<State, Message> for T
 where
     T: Fn() -> C,
-    C: IntoBoot<State>,
+    C: IntoBoot<State, Message>,
 {
-    fn boot(&self) -> (State, Task<HotMessage>) {
+    fn boot(&self) -> (State, Task<Message>) {
         self().into_boot()
     }
 }
 
 /// The initial state of some [`Application`].
-pub trait IntoBoot<State> {
+pub trait IntoBoot<State, Message> {
     /// Turns some type into the initial state of some [`Application`].
-    fn into_boot(self) -> (State, Task<HotMessage>);
+    fn into_boot(self) -> (State, Task<Message>);
 }
 
-impl<State> IntoBoot<State> for State {
-    fn into_boot(self) -> (State, Task<HotMessage>) {
+impl<State, Message> IntoBoot<State, Message> for State {
+    fn into_boot(self) -> (State, Task<Message>) {
         (self, Task::none())
     }
 }
 
-impl<State, Message> IntoBoot<State> for (State, Task<Message>)
+impl<State, Message> IntoBoot<State, Message> for (State, Task<Message>)
 where
     Message: DynMessage,
 {
-    fn into_boot(self) -> (State, Task<HotMessage>) {
+    fn into_boot(self) -> (State, Task<Message>) {
         let (state, task) = self;
-        (state, task.map(DynMessage::into_hot_message))
+        (state, task)
     }
 }

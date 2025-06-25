@@ -1,10 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    marker::PhantomData,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::borrow::Cow;
 
 use iced_core::{theme, window, Element, Font, Settings, Size};
 use iced_futures::{Executor, Subscription};
@@ -17,11 +11,8 @@ use iced_winit::{
 
 use crate::{
     boot,
-    hot_fn::HotFn,
-    lib_reloader::LibReloader,
-    reloader::{
-        ReadyToReload, Reload, ReloadEvent, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
-    },
+    hot_ice::{initiate_lib_reloaders, Title},
+    reloader::Reload,
     update::{self, HotUpdate},
     view::{self, HotView},
     DynMessage, HotMessage,
@@ -90,6 +81,12 @@ where
         }
     }
 
+    let instance = Instance {
+        boot,
+        update: hot_update,
+        view: hot_view,
+    };
+
     HotIce {
         program: Instance {
             boot,
@@ -112,7 +109,7 @@ where
 
 impl<P> HotIce<P>
 where
-    P: Program + 'static,
+    P: Program<Message = HotMessage> + 'static,
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {
@@ -123,7 +120,7 @@ where
             iced_debug::init(iced_debug::Metadata {
                 name: P::name(),
                 theme: None,
-                can_time_travel: cfg!(feature = "time-travel"),
+                can_time_travel: false,
             });
 
             iced_devtools::attach(program)
@@ -334,177 +331,3 @@ where
         }
     }
 }
-
-/// The title logic of some [`Application`].
-///
-/// This trait is implemented both for `&static str` and
-/// any closure `Fn(&State) -> String`.
-///
-/// This trait allows the [`application`] builder to take any of them.
-pub trait Title<State> {
-    /// Produces the title of the [`Application`].
-    fn title(&self, state: &State) -> String;
-}
-
-impl<State> Title<State> for &'static str {
-    fn title(&self, _state: &State) -> String {
-        self.to_string()
-    }
-}
-
-impl<T, State> Title<State> for T
-where
-    T: Fn(&State) -> String,
-{
-    fn title(&self, state: &State) -> String {
-        self(state)
-    }
-}
-
-pub trait HotSubscription<State, Message> {
-    /// Produces the subscription of the [`Application`].
-    fn subscription(&self, state: &State) -> Subscription<Message>;
-}
-
-impl<T, State, Message> HotSubscription<State, Message> for T
-where
-    T: Fn(&State) -> Subscription<Message>,
-{
-    fn subscription(&self, state: &State) -> Subscription<Message> {
-        self(state)
-    }
-}
-
-pub fn initiate_lib_reloaders(
-    hot_view: &impl HotFn,
-    hot_update: &impl HotFn,
-    dylib_path: &'static str,
-) {
-    let mut lib_reloaders = HashMap::new();
-    register_hot_lib(&mut lib_reloaders, hot_view, dylib_path);
-    register_hot_lib(&mut lib_reloaders, hot_update, dylib_path);
-
-    LIB_RELOADER.set(lib_reloaders).ok();
-}
-
-pub fn register_hot_lib(
-    lib_reloaders: &mut HashMap<&'static str, Arc<Mutex<LibReloader>>>,
-    f: &impl HotFn,
-    dylib_path: &'static str,
-) {
-    lib_reloaders.entry(f.library_name()).or_insert_with(|| {
-        let (_, update_ch_rx) = UPDATE_CHANNEL
-            .get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1))
-            .clone();
-        let (subscription_ch_tx, _) = SUBSCRIPTION_CHANNEL
-            .get_or_init(|| crossfire::mpmc::bounded_tx_blocking_rx_future(1))
-            .clone();
-
-        let mut lib_reloader = LibReloader::new(
-            dylib_path,
-            f.library_name(),
-            Some(Duration::from_millis(10)),
-            None,
-        )
-        .expect("Unable to create LibReloader");
-        let change_subscriber = lib_reloader.subscribe_to_file_changes();
-        let lib_reloader = Arc::new(Mutex::new(lib_reloader));
-        let lib = lib_reloader.clone();
-
-        std::thread::spawn(move || loop {
-            let Ok(_) = change_subscriber.recv() else {
-                panic!("Sub channel closed")
-            };
-            if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
-                println!("{err}")
-            }
-
-            let Ok(ReadyToReload) = update_ch_rx.recv() else {
-                panic!("Update Channel closed")
-            };
-            loop {
-                if let Ok(mut lib_reloader) = lib.lock() {
-                    if let Err(err) = lib_reloader.update() {
-                        println!("{err}")
-                    } else {
-                        break;
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
-
-            if let Err(_) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
-                panic!("Subscription Channel closed")
-            }
-        });
-        lib_reloader
-    });
-}
-
-// pub fn with_subscription<P: Program>(
-//     program: P,
-//     f: impl HotSubscription<P::State>,
-// ) -> impl Program<State = P::State, Message = P::Message, Theme = P::Theme>
-// where
-// {
-//     struct WithSubscription<P, F> {
-//         program: P,
-//         subscription: F,
-//     }
-
-//     impl<P: Program, F> Program for WithSubscription<P, F>
-//     where
-//         F: HotSubscription<P::State>,
-//     {
-//         type State = P::State;
-//         type Message = P::Message;
-//         type Theme = P::Theme;
-//         type Renderer = P::Renderer;
-//         type Executor = P::Executor;
-
-//         fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
-//             self.subscription.subscription(state)
-//         }
-
-//         fn name() -> &'static str {
-//             P::name()
-//         }
-
-//         fn boot(&self) -> (Self::State, Task<Self::Message>) {
-//             self.program.boot()
-//         }
-
-//         fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
-//             self.program.update(state, message)
-//         }
-
-//         fn view<'a>(
-//             &self,
-//             state: &'a Self::State,
-//             window: window::Id,
-//         ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
-//             self.program.view(state, window)
-//         }
-
-//         fn title(&self, state: &Self::State, window: window::Id) -> String {
-//             self.program.title(state, window)
-//         }
-
-//         fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
-//             self.program.theme(state, window)
-//         }
-
-//         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
-//             self.program.style(state, theme)
-//         }
-
-//         fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
-//             self.program.scale_factor(state, window)
-//         }
-//     }
-
-//     WithSubscription {
-//         program,
-//         subscription: f,
-//     }
-// }

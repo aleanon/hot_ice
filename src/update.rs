@@ -1,12 +1,23 @@
 use std::{
     any::type_name,
+    collections::HashMap,
     marker::PhantomData,
     panic::{catch_unwind, AssertUnwindSafe},
+    sync::{Arc, Mutex},
+    thread,
 };
 
 use iced_winit::runtime::Task;
+use libloading::Library;
 
-use crate::{hot_fn::HotFn, reloader::LIB_RELOADER, DynMessage, HotMessage};
+use crate::{
+    error::{self, HotFunctionError},
+    hot_fn::{self, HotFn},
+    lib_reloader::LibReloader,
+    message::MessageSource,
+    reloader::LIB_RELOADER,
+    DynMessage, HotMessage,
+};
 
 /// The update logic of some [`Application`].
 ///
@@ -59,64 +70,60 @@ where
         }
     }
 
-    pub fn update<'a>(&self, state: &'a mut State, message: HotMessage) -> Task<HotMessage> {
+    pub fn update<'a>(&self, state: &'a mut State, message: Message) -> Task<Message> {
         if let Some(lock) = LIB_RELOADER.get().and_then(|map| map.get(&self.lib_name)) {
             if let Ok(lib) = lock.try_lock() {
                 let message = message.clone();
                 let state = state as *mut State;
-                match message.into_message::<Message>() {
-                    Ok(message) => {
-                        match unsafe {
-                            lib.get_symbol::<fn(&'a mut State, Message) -> Task<Message>>(
-                                &self.function_name.as_bytes(),
-                            )
-                        } {
-                            Ok(function) => {
-                                let message = message.clone();
-                                match catch_unwind(AssertUnwindSafe(move || {
-                                    println!("message:{:?}", message);
-                                    function(unsafe { &mut *state }, message)
-                                })) {
-                                    Ok(task) => return task.map(DynMessage::into_hot_message),
-                                    Err(err) => {
-                                        std::mem::forget(err);
-                                        println!("Hot reloaded \"{}\" paniced", self.function_name);
-                                    }
-                                }
+                // match message.into_message::<Message>() {
+                //     Ok(message) => {
+                match unsafe {
+                    lib.get_symbol::<fn(&'a mut State, Message) -> Task<Message>>(
+                        &self.function_name.as_bytes(),
+                    )
+                } {
+                    Ok(function) => {
+                        let message = message.clone();
+                        match catch_unwind(AssertUnwindSafe(move || {
+                            println!("message:{:?}", message);
+                            function(unsafe { &mut *state }, message)
+                        })) {
+                            Ok(task) => return task,
+                            Err(err) => {
+                                std::mem::forget(err);
+                                println!("Hot reloaded \"{}\" paniced", self.function_name);
                             }
-                            Err(_) => {}
                         }
                     }
-                    Err(hot_message) => {
-                        match unsafe {
-                            lib.get_symbol::<fn(&'a mut State, HotMessage) -> Task<HotMessage>>(
-                                &self.function_name.as_bytes(),
-                            )
-                        } {
-                            Ok(function) => {
-                                let state = state as *mut State;
-                                match catch_unwind(AssertUnwindSafe(move || {
-                                    println!("message:{:?}", hot_message);
-                                    function(unsafe { &mut *state }, hot_message)
-                                })) {
-                                    Ok(task) => return task.map(DynMessage::into_hot_message),
-                                    Err(err) => {
-                                        std::mem::forget(err);
-                                        println!("Hot reloaded \"{}\" paniced", self.function_name);
-                                    }
-                                }
-                            }
-                            Err(_) => {}
-                        }
-                    }
+                    Err(_) => {}
                 }
+                // }
+                // Err(hot_message) => {
+                //     match unsafe {
+                //         lib.get_symbol::<fn(&'a mut State, HotMessage) -> Task<HotMessage>>(
+                //             &self.function_name.as_bytes(),
+                //         )
+                //     } {
+                //         Ok(function) => {
+                //             let state = state as *mut State;
+                //             match catch_unwind(AssertUnwindSafe(move || {
+                //                 println!("message:{:?}", hot_message);
+                //                 function(unsafe { &mut *state }, hot_message)
+                //             })) {
+                //                 Ok(task) => return task.map(DynMessage::into_hot_message),
+                //                 Err(err) => {
+                //                     std::mem::forget(err);
+                //                     println!("Hot reloaded \"{}\" paniced", self.function_name);
+                //                 }
+                //             }
+                //         }
+                //         Err(_) => {}
+                //     }
+                // }
+                // }
             }
         }
-        let task: Task<Message> = self
-            .function
-            .update(state, message.into_message().unwrap())
-            .into();
-        task.map(DynMessage::into_hot_message)
+        self.function.update(state, message).into()
     }
 }
 
@@ -136,5 +143,71 @@ where
 {
     fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>> {
         (self.function)(state, message)
+    }
+}
+
+pub trait HotUpdateTrait<State, Message> {
+    fn library_name() -> &'static str {
+        let type_name = std::any::type_name::<Self>();
+        let mut iter = type_name.split("::");
+        iter.next().unwrap_or(type_name)
+    }
+
+    fn function_name() -> &'static str {
+        let type_name = std::any::type_name::<Self>();
+        let iter = type_name.split("::");
+        iter.last().unwrap_or(type_name)
+    }
+
+    fn static_update(&self, state: &mut State, message: Message) -> Task<MessageSource<Message>>;
+
+    fn hot_update(
+        &self,
+        state: &mut State,
+        message: Message,
+        reloaders: &HashMap<&'static str, Arc<Mutex<LibReloader>>>,
+    ) -> Result<Task<MessageSource<Message>>, HotFunctionError>;
+}
+
+impl<T, C, State, Message> HotUpdateTrait<State, Message> for T
+where
+    T: Fn(&mut State, Message) -> C,
+    C: Into<Task<Message>>,
+    Message: Send + 'static,
+{
+    fn static_update(&self, state: &mut State, message: Message) -> Task<MessageSource<Message>> {
+        let task: Task<Message> = (self)(state, message).into();
+        task.map(MessageSource::Static)
+    }
+
+    fn hot_update(
+        &self,
+        state: &mut State,
+        message: Message,
+        reloaders: &HashMap<&'static str, Arc<Mutex<LibReloader>>>,
+    ) -> Result<Task<MessageSource<Message>>, HotFunctionError> {
+        let reloader = reloaders
+            .get(Self::library_name())
+            .ok_or(HotFunctionError::LibraryNotFound)?;
+
+        let lib = reloader
+            .try_lock()
+            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+
+        let function = unsafe {
+            lib.get_symbol::<fn(&mut State, Message) -> C>(Self::function_name().as_bytes())
+                .map_err(|_| HotFunctionError::FunctionNotFound(Self::function_name()))?
+        };
+
+        match catch_unwind(AssertUnwindSafe(move || function(state, message))) {
+            Ok(task) => {
+                let task: Task<Message> = task.into();
+                return Ok(task.map(MessageSource::Dynamic));
+            }
+            Err(err) => {
+                std::mem::forget(err);
+                return Err(HotFunctionError::FunctionPaniced(Self::function_name()));
+            }
+        }
     }
 }
