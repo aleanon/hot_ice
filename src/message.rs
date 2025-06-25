@@ -1,5 +1,6 @@
 use std::any::{Any, TypeId};
 
+#[derive(Debug, Clone)]
 pub enum MessageSource<M> {
     Static(M),
     Dynamic(M),

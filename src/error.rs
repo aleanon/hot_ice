@@ -1,5 +1,4 @@
 // Copied from the hot-lib-reloader crate
-
 #[derive(thiserror::Error, Debug)]
 pub enum HotReloaderError {
     #[error("Unable to copy library file: {0}")]
@@ -14,9 +13,9 @@ pub enum HotReloaderError {
 pub enum HotFunctionError {
     #[error("Could not find function library")]
     LibraryNotFound,
-    #[error("Could not load function")]
+    #[error("Could not load function: {0}")]
     FunctionNotFound(&'static str),
-    #[error("Hot function call paniced")]
+    #[error("Hot function call paniced: {0}")]
     FunctionPaniced(&'static str),
     #[error("Unable to acquire lock on reloader")]
     LockAcquisitionError,

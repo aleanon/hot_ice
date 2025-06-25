@@ -112,7 +112,7 @@ where
 
 impl<P> HotIce<P>
 where
-    P: Program + 'static,
+    P: Program<Message = HotMessage> + 'static,
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {

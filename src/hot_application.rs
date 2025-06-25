@@ -1,4 +1,9 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use iced_core::{theme, window, Element, Font, Settings, Size};
 use iced_futures::{Executor, Subscription};
@@ -11,19 +16,26 @@ use iced_winit::{
 
 use crate::{
     boot,
-    hot_ice::{initiate_lib_reloaders, Title},
-    reloader::Reload,
-    update::{self, HotUpdate},
-    view::{self, HotView},
+    hot_fn::HotFn,
+    hot_program::{HotProgram, Instance},
+    hot_reloader::{
+        Reload, ReloadEvent, Reloader, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
+    },
+    hot_update::{self, HotUpdate},
+    hot_view::{self, HotView},
+    lib_reloader::LibReloader,
+    message::MessageSource,
     DynMessage, HotMessage,
 };
 
 pub fn hot_application<State, Message, Theme, Renderer>(
     dylib_path: &'static str,
     boot: impl boot::Boot<State, Message>,
-    update: impl update::Update<State, Message>,
-    view: impl for<'a> view::View<'a, State, Message, Theme, Renderer>,
-) -> HotIce<impl Program<State = State, Message = Message, Theme = Theme>>
+    update: impl hot_update::HotUpdateTrait<State, Message>,
+    view: impl for<'a> hot_view::HotViewTrait<'a, State, Message, Theme, Renderer>,
+) -> HotIce<
+    impl Program<State = State, Message = MessageSource<Message>, Theme = Theme, Renderer = Renderer>,
+>
 where
     State: 'static,
     Message: DynMessage + Clone,
@@ -49,11 +61,11 @@ where
         Theme: Default + theme::Base + 'static,
         Renderer: iced_core::text::Renderer + compositor::Default + 'static,
         Boot: boot::Boot<State, Message>,
-        Update: update::Update<State, Message>,
-        View: for<'a> view::View<'a, State, Message, Theme, Renderer>,
+        Update: hot_update::HotUpdateTrait<State, Message>,
+        View: for<'a> hot_view::HotViewTrait<'a, State, Message, Theme, Renderer>,
     {
         type State = State;
-        type Message = Message;
+        type Message = MessageSource<Message>;
         type Theme = Theme;
         type Renderer = Renderer;
         type Executor = iced_futures::backend::default::Executor;
@@ -65,7 +77,8 @@ where
         }
 
         fn boot(&self) -> (State, Task<Self::Message>) {
-            self.boot.boot()
+            let (state, task) = self.boot.boot();
+            (state, task.map(|message| MessageSource::Static(message)))
         }
 
         fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
@@ -80,12 +93,6 @@ where
             self.view.view(state)
         }
     }
-
-    let instance = Instance {
-        boot,
-        update: hot_update,
-        view: hot_view,
-    };
 
     HotIce {
         program: Instance {
@@ -109,7 +116,7 @@ where
 
 impl<P> HotIce<P>
 where
-    P: Program<Message = HotMessage> + 'static,
+    P: Program + 'static,
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {
@@ -330,4 +337,95 @@ where
             window: self.window,
         }
     }
+}
+
+/// The title logic of some [`Application`].
+///
+/// This trait is implemented both for `&static str` and
+/// any closure `Fn(&State) -> String`.
+///
+/// This trait allows the [`application`] builder to take any of them.
+pub trait Title<State> {
+    /// Produces the title of the [`Application`].
+    fn title(&self, state: &State) -> String;
+}
+
+impl<State> Title<State> for &'static str {
+    fn title(&self, _state: &State) -> String {
+        self.to_string()
+    }
+}
+
+impl<T, State> Title<State> for T
+where
+    T: Fn(&State) -> String,
+{
+    fn title(&self, state: &State) -> String {
+        self(state)
+    }
+}
+pub fn initiate_lib_reloaders(
+    hot_view: &impl HotFn,
+    hot_update: &impl HotFn,
+    dylib_path: &'static str,
+) {
+    let mut lib_reloaders = HashMap::new();
+    register_hot_lib(&mut lib_reloaders, hot_view, dylib_path);
+    register_hot_lib(&mut lib_reloaders, hot_update, dylib_path);
+
+    LIB_RELOADER.set(lib_reloaders).ok();
+}
+
+pub fn register_hot_lib(
+    lib_reloaders: &mut HashMap<&'static str, Arc<Mutex<LibReloader>>>,
+    f: &impl HotFn,
+    dylib_path: &'static str,
+) {
+    lib_reloaders.entry(f.library_name()).or_insert_with(|| {
+        let (_, update_ch_rx) = UPDATE_CHANNEL
+            .get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1))
+            .clone();
+        let (subscription_ch_tx, _) = SUBSCRIPTION_CHANNEL
+            .get_or_init(|| crossfire::mpmc::bounded_tx_blocking_rx_future(1))
+            .clone();
+
+        let mut lib_reloader = LibReloader::new(
+            dylib_path,
+            f.library_name(),
+            Some(Duration::from_millis(10)),
+            None,
+        )
+        .expect("Unable to create LibReloader");
+        let change_subscriber = lib_reloader.subscribe_to_file_changes();
+        let lib_reloader = Arc::new(Mutex::new(lib_reloader));
+        let lib = lib_reloader.clone();
+
+        std::thread::spawn(move || loop {
+            let Ok(_) = change_subscriber.recv() else {
+                panic!("Sub channel closed")
+            };
+            if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
+                println!("{err}")
+            }
+
+            let Ok(ReadyToReload) = update_ch_rx.recv() else {
+                panic!("Update Channel closed")
+            };
+            loop {
+                if let Ok(mut lib_reloader) = lib.lock() {
+                    if let Err(err) = lib_reloader.update() {
+                        println!("{err}")
+                    } else {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            if let Err(_) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
+                panic!("Subscription Channel closed")
+            }
+        });
+        lib_reloader
+    });
 }

@@ -116,23 +116,3 @@ where
         (self.function)(state).into()
     }
 }
-
-// pub trait HotViewTrait<'a, State, Message, Theme, Renderer> {
-//     fn hotview(&self, state: &'a State) -> Element<'a, HotMessage, Theme, Renderer>;
-// }
-
-// impl<'a, F, State, Message, Theme, Renderer, Widget>
-//     HotViewTrait<'a, State, Message, Theme, Renderer> for F
-// where
-//     F: Fn(&'a State) -> Widget,
-//     State: 'static,
-//     Widget: Into<Element<'a, Message, Theme, Renderer>>,
-//     Message: Into<HotMessage> + TryFrom<HotMessage> + 'a,
-//     Renderer: iced_core::Renderer + 'a,
-//     Theme: 'a,
-// {
-//     fn hotview(&self, state: &'a State, library: ) -> Element<'a, HotMessage, Theme, Renderer> {
-//         let element: Element<'a, Message, Theme, Renderer> = (self)(state).into();
-//         element.map(|m| m.into())
-//     }
-// }
