@@ -9,8 +9,8 @@ use std::{
 use iced_core::Element;
 
 use crate::{
-    error::HotFunctionError, hot_fn::HotFn, hot_reloader::LIB_RELOADER, lib_reloader::LibReloader,
-    message::MessageSource,
+    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
+    reloader::LIB_RELOADER,
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;

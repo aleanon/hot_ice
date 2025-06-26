@@ -16,7 +16,7 @@ use iced_widget::{container, pop, text, themer};
 use iced_winit::{program::Program, runtime::Task};
 use once_cell::sync::OnceCell;
 
-use crate::{hot_program::HotProgram, lib_reloader::LibReloader};
+use crate::lib_reloader::LibReloader;
 
 pub static SUBSCRIPTION_CHANNEL: OnceCell<(
     TxBlocking<ReloadEvent, SharedSenderBRecvF>,

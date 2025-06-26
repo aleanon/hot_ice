@@ -14,8 +14,6 @@ use iced_winit::runtime::Task;
 use crate::lib_reloader::LibReloader;
 use crate::DynMessage;
 
-type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
-
 /// An interactive, native, cross-platform, multi-windowed application.
 ///
 /// A [`Program`] can execute asynchronous actions by returning a

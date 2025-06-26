@@ -17,15 +17,12 @@ use iced_winit::{
 use crate::{
     boot,
     hot_fn::HotFn,
-    hot_program::{HotProgram, Instance},
-    hot_reloader::{
-        Reload, ReloadEvent, Reloader, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
-    },
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
     message::MessageSource,
-    DynMessage, HotMessage,
+    reloader::{Reload, ReloadEvent, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL},
+    DynMessage,
 };
 
 pub fn hot_application<State, Message, Theme, Renderer>(
@@ -408,7 +405,7 @@ pub fn register_hot_lib(
                 println!("{err}")
             }
 
-            let Ok(ReadyToReload) = update_ch_rx.recv() else {
+            let Ok(_ready_to_reload) = update_ch_rx.recv() else {
                 panic!("Update Channel closed")
             };
             loop {

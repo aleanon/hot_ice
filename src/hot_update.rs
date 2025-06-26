@@ -9,8 +9,8 @@ use std::{
 use iced_winit::runtime::Task;
 
 use crate::{
-    error::HotFunctionError, hot_fn::HotFn, hot_reloader::LIB_RELOADER, lib_reloader::LibReloader,
-    message::MessageSource, DynMessage,
+    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
+    reloader::LIB_RELOADER, DynMessage,
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
