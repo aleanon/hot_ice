@@ -694,7 +694,7 @@ checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
 
 [[package]]
 name = "hot_ice"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "crc32fast",
  "crossfire",
