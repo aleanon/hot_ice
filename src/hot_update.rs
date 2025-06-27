@@ -4,13 +4,19 @@ use std::{
     marker::PhantomData,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex},
+    thread::Thread,
 };
 
 use iced_winit::runtime::Task;
 
 use crate::{
-    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
-    reloader::LIB_RELOADER, DynMessage,
+    error::HotFunctionError,
+    hot_fn::HotFn,
+    lib_reloader::LibReloader,
+    message::MessageSource,
+    reloader::LIB_RELOADER,
+    unsafe_ref_mut::{UnsafeMover, UnsafeRef, UnsafeRefMut},
+    DynMessage,
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
@@ -41,8 +47,9 @@ pub trait HotUpdateTrait<State, Message> {
 impl<T, C, State, Message> HotUpdateTrait<State, Message> for T
 where
     T: Fn(&mut State, Message) -> C,
-    C: Into<Task<Message>>,
+    C: Into<Task<Message>> + 'static,
     Message: Send + 'static,
+    State: Send + 'static,
 {
     fn static_update(&self, state: &mut State, message: Message) -> Task<Message> {
         (self)(state, message).into()
@@ -58,22 +65,25 @@ where
             .get(Self::library_name())
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
-        let lib = reloader
-            .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+        let mut state = unsafe { UnsafeRefMut::new(state) };
+        let reloader = reloader.clone();
 
-        let function = unsafe {
-            lib.get_symbol::<fn(&mut State, Message) -> C>(Self::function_name().as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(Self::function_name()))?
-        };
+        std::thread::spawn(move || {
+            let lib = reloader
+                .try_lock()
+                .map_err(|_| HotFunctionError::LockAcquisitionError)?;
 
-        match catch_unwind(AssertUnwindSafe(move || function(state, message))) {
-            Ok(task) => return Ok(task.into()),
-            Err(err) => {
-                std::mem::forget(err);
-                return Err(HotFunctionError::FunctionPaniced(Self::function_name()));
-            }
-        }
+            let function = unsafe {
+                lib.get_symbol::<fn(&mut State, Message) -> C>(Self::function_name().as_bytes())
+                    .map_err(|_| HotFunctionError::FunctionNotFound(Self::function_name()))?
+            };
+
+            let task = UnsafeMover::new(function(&mut *state, message));
+            Ok::<UnsafeMover<C>, HotFunctionError>(task)
+        })
+        .join()
+        .map_err(|_| HotFunctionError::FunctionPaniced(Self::function_name()))?
+        .and_then(|task| Ok(task.to_owned().into()))
     }
 }
 
@@ -120,11 +130,15 @@ where
                     return Task::none();
                 };
 
-                self.function
-                    .hot_update(state, message, reloaders)
-                    .inspect_err(|e| eprintln!("{}", e))
-                    .unwrap_or(Task::none())
-                    .map(MessageSource::Dynamic)
+                match self.function.hot_update(state, message.clone(), reloaders) {
+                    Ok(task) => task.map(MessageSource::Dynamic),
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        self.function
+                            .static_update(state, message)
+                            .map(MessageSource::Static)
+                    }
+                }
             }
         }
     }

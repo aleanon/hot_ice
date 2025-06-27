@@ -2,6 +2,7 @@ use std::{
     any::type_name,
     collections::HashMap,
     marker::PhantomData,
+    ops::Deref,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex},
 };
@@ -9,8 +10,12 @@ use std::{
 use iced_core::Element;
 
 use crate::{
-    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
+    error::HotFunctionError,
+    hot_fn::HotFn,
+    lib_reloader::LibReloader,
+    message::MessageSource,
     reloader::LIB_RELOADER,
+    unsafe_ref_mut::{UnsafeMover, UnsafeRef},
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
@@ -40,7 +45,7 @@ pub trait HotViewTrait<'a, State, Message, Theme, Renderer> {
 impl<'a, T, C, State, Message, Theme, Renderer> HotViewTrait<'a, State, Message, Theme, Renderer>
     for T
 where
-    State: 'a,
+    State: 'static,
     T: Fn(&'a State) -> C,
     C: Into<Element<'a, Message, Theme, Renderer>>,
 {
@@ -57,6 +62,9 @@ where
             .get(Self::library_name())
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
+        // let state = unsafe { UnsafeRef::new(state) };
+        let reloader = reloader.clone();
+
         let lib = reloader
             .try_lock()
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;
@@ -65,14 +73,7 @@ where
             lib.get_symbol::<fn(&'a State) -> C>(Self::function_name().as_bytes())
                 .map_err(|_| HotFunctionError::FunctionNotFound(Self::function_name()))?
         };
-
-        match catch_unwind(AssertUnwindSafe(move || function(state))) {
-            Ok(element) => return Ok(element.into()),
-            Err(err) => {
-                std::mem::forget(err);
-                return Err(HotFunctionError::FunctionPaniced(Self::function_name()));
-            }
-        }
+        Ok(function(state).into())
     }
 }
 
