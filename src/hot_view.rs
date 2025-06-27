@@ -2,20 +2,14 @@ use std::{
     any::type_name,
     collections::HashMap,
     marker::PhantomData,
-    ops::Deref,
-    panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex},
 };
 
 use iced_core::Element;
 
 use crate::{
-    error::HotFunctionError,
-    hot_fn::HotFn,
-    lib_reloader::LibReloader,
-    message::MessageSource,
+    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
     reloader::LIB_RELOADER,
-    unsafe_ref_mut::{UnsafeMover, UnsafeRef},
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
@@ -62,7 +56,6 @@ where
             .get(Self::library_name())
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
-        // let state = unsafe { UnsafeRef::new(state) };
         let reloader = reloader.clone();
 
         let lib = reloader

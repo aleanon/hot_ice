@@ -2,9 +2,7 @@ use std::{
     any::type_name,
     collections::HashMap,
     marker::PhantomData,
-    panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex},
-    thread::Thread,
 };
 
 use iced_winit::runtime::Task;
@@ -15,7 +13,7 @@ use crate::{
     lib_reloader::LibReloader,
     message::MessageSource,
     reloader::LIB_RELOADER,
-    unsafe_ref_mut::{UnsafeMover, UnsafeRef, UnsafeRefMut},
+    unsafe_ref_mut::{UnsafeMover, UnsafeRefMut},
     DynMessage,
 };
 

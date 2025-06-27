@@ -1,7 +1,4 @@
 //! The definition of an iced program.
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
 
 use iced_core::text;
 use iced_core::theme;
@@ -11,7 +8,6 @@ use iced_futures::{Executor, Subscription};
 use iced_winit::graphics::compositor;
 use iced_winit::runtime::Task;
 
-use crate::lib_reloader::LibReloader;
 use crate::DynMessage;
 
 /// An interactive, native, cross-platform, multi-windowed application.
