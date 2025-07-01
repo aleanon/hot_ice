@@ -132,9 +132,7 @@ where
                     Ok(task) => task.map(MessageSource::Dynamic),
                     Err(e) => {
                         eprintln!("{}", e);
-                        self.function
-                            .static_update(state, message)
-                            .map(MessageSource::Static)
+                        Task::none()
                     }
                 }
             }
