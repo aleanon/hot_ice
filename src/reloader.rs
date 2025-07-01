@@ -16,7 +16,7 @@ use iced_widget::{container, pop, text, themer};
 use iced_winit::{program::Program, runtime::Task};
 use once_cell::sync::OnceCell;
 
-use crate::lib_reloader::LibReloader;
+use crate::{hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource};
 
 pub static SUBSCRIPTION_CHANNEL: OnceCell<(
     TxBlocking<ReloadEvent, SharedSenderBRecvF>,
@@ -32,7 +32,7 @@ pub static LIB_RELOADER: OnceCell<HashMap<&'static str, Arc<Mutex<LibReloader>>>
 
 pub struct Reload<P>
 where
-    P: Program + 'static,
+    P: HotProgram + 'static,
     P::Message: Clone,
 {
     program: P,
@@ -40,7 +40,7 @@ where
 
 impl<P> Reload<P>
 where
-    P: Program + 'static,
+    P: HotProgram + 'static,
     P::Message: Clone,
 {
     pub fn new(program: P) -> Self {
@@ -50,7 +50,7 @@ where
 
 impl<P> Program for Reload<P>
 where
-    P: Program + 'static,
+    P: HotProgram + 'static,
     P::Message: Clone,
 {
     type State = Reloader<P>;
@@ -102,18 +102,18 @@ where
 
 pub enum Message<P>
 where
-    P: Program,
+    P: HotProgram,
 {
     None,
     AboutToReload,
     ReloadComplete,
     SendReadySignal,
-    AppMessage(P::Message),
+    AppMessage(MessageSource<P::Message>),
 }
 
 impl<P> Clone for Message<P>
 where
-    P: Program,
+    P: HotProgram,
     P::Message: Clone,
 {
     fn clone(&self) -> Self {
@@ -127,7 +127,7 @@ where
     }
 }
 
-impl<P: Program> Debug for Message<P> {
+impl<P: HotProgram> Debug for Message<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AppMessage(message) => message.fmt(f),
@@ -147,7 +147,7 @@ pub enum ReloadEvent {
 
 pub struct ReadyToReload;
 
-pub struct Reloader<P: Program + 'static> {
+pub struct Reloader<P: HotProgram + 'static> {
     state: P::State,
     libraries_reloading: u16,
     update_ch_tx: TxFuture<ReadyToReload, SharedSenderFRecvB>,
@@ -156,7 +156,7 @@ pub struct Reloader<P: Program + 'static> {
 
 impl<'a, P> Reloader<P>
 where
-    P: Program + 'static,
+    P: HotProgram + 'static,
     P::Message: Clone,
 {
     pub fn new(program: &P) -> (Self, Task<Message<P>>) {

@@ -10,7 +10,6 @@ use iced_winit::runtime::Task;
 
 use crate::hot_subscription::HotSubscription;
 use crate::hot_subscription::IntoHotSubscription;
-use crate::lib_reloader::LibReloader;
 use crate::message::MessageSource;
 use crate::DynMessage;
 
@@ -102,7 +101,13 @@ pub trait HotProgram: Sized {
 pub fn with_title<P: HotProgram>(
     program: P,
     title: impl Fn(&P::State, window::Id) -> String,
-) -> impl HotProgram<State = P::State, Theme = P::Theme> {
+) -> impl HotProgram<
+    State = P::State,
+    Message = P::Message,
+    Theme = P::Theme,
+    Renderer = P::Renderer,
+    Executor = P::Executor,
+> {
     struct WithTitle<P, Title> {
         program: P,
         title: Title,

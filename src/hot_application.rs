@@ -17,6 +17,8 @@ use iced_winit::{
 use crate::{
     boot,
     hot_fn::HotFn,
+    hot_program::{self, HotProgram},
+    hot_subscription::{HotSubscription, IntoHotSubscription},
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
@@ -30,9 +32,7 @@ pub fn hot_application<State, Message, Theme, Renderer>(
     boot: impl boot::Boot<State, Message>,
     update: impl hot_update::HotUpdateTrait<State, Message>,
     view: impl for<'a> hot_view::HotViewTrait<'a, State, Message, Theme, Renderer>,
-) -> HotIce<
-    impl Program<State = State, Message = MessageSource<Message>, Theme = Theme, Renderer = Renderer>,
->
+) -> HotIce<impl HotProgram<State = State, Message = Message, Theme = Theme, Renderer = Renderer>>
 where
     State: 'static,
     Message: DynMessage + Clone,
@@ -50,7 +50,7 @@ where
         view: HotView<View, State, Message, Theme, Renderer>,
     }
 
-    impl<State, Message, Theme, Renderer, Boot, Update, View> Program
+    impl<State, Message, Theme, Renderer, Boot, Update, View> HotProgram
         for Instance<State, Message, Theme, Renderer, Boot, Update, View>
     where
         State: 'static,
@@ -62,7 +62,7 @@ where
         View: for<'a> hot_view::HotViewTrait<'a, State, Message, Theme, Renderer>,
     {
         type State = State;
-        type Message = MessageSource<Message>;
+        type Message = Message;
         type Theme = Theme;
         type Renderer = Renderer;
         type Executor = iced_futures::backend::default::Executor;
@@ -73,12 +73,16 @@ where
             name.split("::").next().unwrap_or("an_ice_hot_application")
         }
 
-        fn boot(&self) -> (State, Task<Self::Message>) {
+        fn boot(&self) -> (State, Task<MessageSource<Self::Message>>) {
             let (state, task) = self.boot.boot();
             (state, task.map(|message| MessageSource::Static(message)))
         }
 
-        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: MessageSource<Self::Message>,
+        ) -> Task<MessageSource<Self::Message>> {
             self.update.update(state, message)
         }
 
@@ -86,7 +90,7 @@ where
             &self,
             state: &'a Self::State,
             _window: window::Id,
-        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
             self.view.view(state)
         }
     }
@@ -104,7 +108,7 @@ where
 
 pub struct HotIce<P>
 where
-    P: Program,
+    P: HotProgram,
 {
     program: P,
     settings: Settings,
@@ -113,7 +117,7 @@ where
 
 impl<P> HotIce<P>
 where
-    P: Program + 'static,
+    P: HotProgram + 'static,
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {
@@ -265,9 +269,11 @@ where
     pub fn title(
         self,
         title: impl Title<P::State>,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: program::with_title(self.program, move |state, _window| title.title(state)),
+            program: hot_program::with_title(self.program, move |state, _window| {
+                title.title(state)
+            }),
             settings: self.settings,
             window: self.window,
         }
@@ -276,10 +282,10 @@ where
     /// Sets the subscription logic of the [`Application`].
     pub fn subscription(
         self,
-        f: impl Fn(&P::State) -> Subscription<P::Message>,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+        f: impl IntoHotSubscription<P::State, P::Message>,
+    ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: program::with_subscription(self.program, f),
+            program: hot_program::with_subscription(self.program, f),
             settings: self.settings,
             window: self.window,
         }
@@ -289,9 +295,9 @@ where
     pub fn theme(
         self,
         f: impl Fn(&P::State) -> P::Theme,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: program::with_theme(self.program, move |state, _window| f(state)),
+            program: hot_program::with_theme(self.program, move |state, _window| f(state)),
             settings: self.settings,
             window: self.window,
         }
@@ -301,9 +307,9 @@ where
     pub fn style(
         self,
         f: impl Fn(&P::State, &P::Theme) -> theme::Style,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: program::with_style(self.program, f),
+            program: hot_program::with_style(self.program, f),
             settings: self.settings,
             window: self.window,
         }
@@ -313,9 +319,9 @@ where
     pub fn scale_factor(
         self,
         f: impl Fn(&P::State) -> f64,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: program::with_scale_factor(self.program, move |state, _window| f(state)),
+            program: hot_program::with_scale_factor(self.program, move |state, _window| f(state)),
             settings: self.settings,
             window: self.window,
         }
@@ -324,12 +330,12 @@ where
     /// Sets the executor of the [`Application`].
     pub fn executor<E>(
         self,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>>
+    ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>>
     where
         E: Executor,
     {
         HotIce {
-            program: program::with_executor::<P, E>(self.program),
+            program: hot_program::with_executor::<P, E>(self.program),
             settings: self.settings,
             window: self.window,
         }
@@ -361,6 +367,7 @@ where
         self(state)
     }
 }
+
 pub fn initiate_lib_reloaders(
     hot_view: &impl HotFn,
     hot_update: &impl HotFn,
