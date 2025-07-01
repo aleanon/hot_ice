@@ -6,13 +6,8 @@ use std::{
 };
 
 use iced_core::{theme, window, Element, Font, Settings, Size};
-use iced_futures::{Executor, Subscription};
-use iced_winit::{
-    graphics::compositor,
-    program::{self, Program},
-    runtime::Task,
-    Error,
-};
+use iced_futures::Executor;
+use iced_winit::{graphics::compositor, runtime::Task, Error};
 
 use crate::{
     boot,

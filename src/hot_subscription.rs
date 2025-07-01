@@ -9,11 +9,8 @@ use std::{
 use iced_futures::Subscription;
 
 use crate::{
-    error::HotFunctionError,
-    lib_reloader::LibReloader,
-    message::MessageSource,
+    error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
     reloader::LIB_RELOADER,
-    unsafe_ref_mut::{UnsafeMover, UnsafeRef, UnsafeRefMut},
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
