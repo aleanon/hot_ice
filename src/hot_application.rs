@@ -13,7 +13,7 @@ use crate::{
     boot,
     hot_fn::HotFn,
     hot_program::{self, HotProgram},
-    hot_subscription::{HotSubscription, IntoHotSubscription},
+    hot_subscription::IntoHotSubscription,
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
