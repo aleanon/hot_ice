@@ -125,14 +125,19 @@ where
                 .map(MessageSource::Static),
             MessageSource::Dynamic(message) => {
                 let Some(reloaders) = LIB_RELOADER.get() else {
-                    return Task::none();
+                    return self
+                        .function
+                        .static_update(state, message)
+                        .map(MessageSource::Static);
                 };
 
                 match self.function.hot_update(state, message.clone(), reloaders) {
                     Ok(task) => task.map(MessageSource::Dynamic),
                     Err(e) => {
                         eprintln!("{}", e);
-                        Task::none()
+                        self.function
+                            .static_update(state, message)
+                            .map(MessageSource::Static)
                     }
                 }
             }
