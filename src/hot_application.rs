@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
+    marker::PhantomData,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -17,6 +18,7 @@ use iced_winit::{
 use crate::{
     boot,
     hot_fn::HotFn,
+    hot_subscription::{HotSubscription, IntoHotSubscription},
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
@@ -32,6 +34,7 @@ pub fn hot_application<State, Message, Theme, Renderer>(
     view: impl for<'a> hot_view::HotViewTrait<'a, State, Message, Theme, Renderer>,
 ) -> HotIce<
     impl Program<State = State, Message = MessageSource<Message>, Theme = Theme, Renderer = Renderer>,
+    Message,
 >
 where
     State: 'static,
@@ -99,19 +102,21 @@ where
         },
         settings: Settings::default(),
         window: window::Settings::default(),
+        _message: PhantomData,
     }
 }
 
-pub struct HotIce<P>
+pub struct HotIce<P, Message>
 where
     P: Program,
 {
     program: P,
     settings: Settings,
     window: window::Settings,
+    _message: PhantomData<Message>,
 }
 
-impl<P> HotIce<P>
+impl<P, Message> HotIce<P, Message>
 where
     P: Program + 'static,
     P::Message: Clone,
@@ -265,23 +270,27 @@ where
     pub fn title(
         self,
         title: impl Title<P::State>,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>, Message>
+    {
         HotIce {
             program: program::with_title(self.program, move |state, _window| title.title(state)),
             settings: self.settings,
             window: self.window,
+            _message: PhantomData,
         }
     }
 
     /// Sets the subscription logic of the [`Application`].
     pub fn subscription(
         self,
-        f: impl Fn(&P::State) -> Subscription<P::Message>,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+        f: impl IntoHotSubscription<P::State, P::Message>,
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>, Message>
+    {
         HotIce {
-            program: program::with_subscription(self.program, f),
+            program: with_subscription(self.program, f),
             settings: self.settings,
             window: self.window,
+            _message: PhantomData,
         }
     }
 
@@ -289,11 +298,13 @@ where
     pub fn theme(
         self,
         f: impl Fn(&P::State) -> P::Theme,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>, Message>
+    {
         HotIce {
             program: program::with_theme(self.program, move |state, _window| f(state)),
             settings: self.settings,
             window: self.window,
+            _message: PhantomData,
         }
     }
 
@@ -301,11 +312,13 @@ where
     pub fn style(
         self,
         f: impl Fn(&P::State, &P::Theme) -> theme::Style,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>, Message>
+    {
         HotIce {
             program: program::with_style(self.program, f),
             settings: self.settings,
             window: self.window,
+            _message: PhantomData,
         }
     }
 
@@ -313,18 +326,20 @@ where
     pub fn scale_factor(
         self,
         f: impl Fn(&P::State) -> f64,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>, Message>
+    {
         HotIce {
             program: program::with_scale_factor(self.program, move |state, _window| f(state)),
             settings: self.settings,
             window: self.window,
+            _message: PhantomData,
         }
     }
 
     /// Sets the executor of the [`Application`].
     pub fn executor<E>(
         self,
-    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>>
+    ) -> HotIce<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>, Message>
     where
         E: Executor,
     {
@@ -332,7 +347,75 @@ where
             program: program::with_executor::<P, E>(self.program),
             settings: self.settings,
             window: self.window,
+            _message: PhantomData,
         }
+    }
+}
+
+/// Decorates a [`Program`] with the given subscription function.
+pub fn with_subscription<P: Program>(
+    program: P,
+    f: impl Fn(&P::State) -> Subscription<P::Message>,
+) -> impl Program<State = P::State, Message = P::Message, Theme = P::Theme> {
+    struct WithSubscription<P, F> {
+        program: P,
+        subscription: F,
+    }
+
+    impl<P: Program, F> Program for WithSubscription<P, F>
+    where
+        F: Fn(&P::State) -> Subscription<P::Message>,
+    {
+        type State = P::State;
+        type Message = P::Message;
+        type Theme = P::Theme;
+        type Renderer = P::Renderer;
+        type Executor = P::Executor;
+
+        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
+            (self.subscription)(state)
+        }
+
+        fn name() -> &'static str {
+            P::name()
+        }
+
+        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+            self.program.boot()
+        }
+
+        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+            self.program.update(state, message)
+        }
+
+        fn view<'a>(
+            &self,
+            state: &'a Self::State,
+            window: window::Id,
+        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+            self.program.view(state, window)
+        }
+
+        fn title(&self, state: &Self::State, window: window::Id) -> String {
+            self.program.title(state, window)
+        }
+
+        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+            self.program.theme(state, window)
+        }
+
+        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
+            self.program.style(state, theme)
+        }
+
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+            self.program.scale_factor(state, window)
+        }
+    }
+
+    WithSubscription {
+        program,
+        subscription: f,
     }
 }
 

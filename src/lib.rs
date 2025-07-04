@@ -5,6 +5,7 @@ mod error;
 mod hot_application;
 mod hot_fn;
 mod hot_program;
+mod hot_subscription;
 mod hot_update;
 mod hot_view;
 mod lib_reloader;

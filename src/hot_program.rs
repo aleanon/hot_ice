@@ -20,7 +20,7 @@ pub trait HotProgram: Sized {
     type State;
 
     /// The message of the program.
-    type Message: DynMessage;
+    type Message: DynMessage + Clone;
 
     /// The theme of the program.
     type Theme: Default + theme::Base;
@@ -34,15 +34,19 @@ pub trait HotProgram: Sized {
     /// Returns the unique name of the [`Program`].
     fn name() -> &'static str;
 
-    fn boot(&self) -> (Self::State, Task<Self::Message>);
+    fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>);
 
-    fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message>;
+    fn update(
+        &self,
+        state: &mut Self::State,
+        message: MessageSource<Self::Message>,
+    ) -> Task<MessageSource<Self::Message>>;
 
     fn view<'a>(
         &self,
         state: &'a Self::State,
         window: window::Id,
-    ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer>;
+    ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>;
 
     fn title(&self, _state: &Self::State, _window: window::Id) -> String {
         let mut title = String::new();
@@ -73,7 +77,7 @@ pub trait HotProgram: Sized {
         format!("{title} - Iced")
     }
 
-    fn subscription(&self, _state: &Self::State) -> Subscription<Self::Message> {
+    fn subscription(&self, _state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
         Subscription::none()
     }
 
@@ -119,11 +123,15 @@ pub fn with_title<P: HotProgram>(
             P::name()
         }
 
-        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
             self.program.boot()
         }
 
-        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: MessageSource<Self::Message>,
+        ) -> Task<MessageSource<Self::Message>> {
             self.program.update(state, message)
         }
 
@@ -131,7 +139,7 @@ pub fn with_title<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
             self.program.view(state, window)
         }
 
@@ -139,7 +147,7 @@ pub fn with_title<P: HotProgram>(
             self.program.theme(state, window)
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
+        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
@@ -158,16 +166,21 @@ pub fn with_title<P: HotProgram>(
 /// Decorates a [`Program`] with the given subscription function.
 pub fn with_subscription<P: HotProgram>(
     program: P,
-    f: impl Fn(&P::State) -> Subscription<P::Message>,
+    f: impl IntoHotSubscription<P::State, P::Message>,
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
-    struct WithSubscription<P, F> {
+    let hot_sub = HotSubscription::new(f);
+
+    struct WithSubscription<P, F>
+    where
+        P: HotProgram,
+    {
         program: P,
-        subscription: F,
+        subscription: HotSubscription<F, P::State, P::Message>,
     }
 
     impl<P: HotProgram, F> HotProgram for WithSubscription<P, F>
     where
-        F: Fn(&P::State) -> Subscription<P::Message>,
+        F: IntoHotSubscription<P::State, P::Message>,
     {
         type State = P::State;
         type Message = P::Message;
@@ -175,19 +188,23 @@ pub fn with_subscription<P: HotProgram>(
         type Renderer = P::Renderer;
         type Executor = P::Executor;
 
-        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
-            (self.subscription)(state)
+        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
+            self.subscription.subscription(state)
         }
 
         fn name() -> &'static str {
             P::name()
         }
 
-        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
             self.program.boot()
         }
 
-        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: MessageSource<Self::Message>,
+        ) -> Task<MessageSource<Self::Message>> {
             self.program.update(state, message)
         }
 
@@ -195,7 +212,7 @@ pub fn with_subscription<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
             self.program.view(state, window)
         }
 
@@ -218,7 +235,7 @@ pub fn with_subscription<P: HotProgram>(
 
     WithSubscription {
         program,
-        subscription: f,
+        subscription: hot_sub,
     }
 }
 
@@ -250,7 +267,7 @@ pub fn with_theme<P: HotProgram>(
             P::name()
         }
 
-        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
             self.program.boot()
         }
 
@@ -258,7 +275,11 @@ pub fn with_theme<P: HotProgram>(
             self.program.title(state, window)
         }
 
-        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: MessageSource<Self::Message>,
+        ) -> Task<MessageSource<Self::Message>> {
             self.program.update(state, message)
         }
 
@@ -266,11 +287,11 @@ pub fn with_theme<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
             self.program.view(state, window)
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
+        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
@@ -314,7 +335,7 @@ pub fn with_style<P: HotProgram>(
             P::name()
         }
 
-        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
             self.program.boot()
         }
 
@@ -322,7 +343,11 @@ pub fn with_style<P: HotProgram>(
             self.program.title(state, window)
         }
 
-        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: MessageSource<Self::Message>,
+        ) -> Task<MessageSource<Self::Message>> {
             self.program.update(state, message)
         }
 
@@ -330,11 +355,11 @@ pub fn with_style<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
             self.program.view(state, window)
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
+        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
@@ -378,11 +403,15 @@ pub fn with_scale_factor<P: HotProgram>(
             P::name()
         }
 
-        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
             self.program.boot()
         }
 
-        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: MessageSource<Self::Message>,
+        ) -> Task<MessageSource<Self::Message>> {
             self.program.update(state, message)
         }
 
@@ -390,11 +419,11 @@ pub fn with_scale_factor<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
             self.program.view(state, window)
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
+        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
@@ -446,11 +475,15 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             P::name()
         }
 
-        fn boot(&self) -> (Self::State, Task<Self::Message>) {
+        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
             self.program.boot()
         }
 
-        fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
+        fn update(
+            &self,
+            state: &mut Self::State,
+            message: MessageSource<Self::Message>,
+        ) -> Task<MessageSource<Self::Message>> {
             self.program.update(state, message)
         }
 
@@ -458,11 +491,11 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
             self.program.view(state, window)
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
+        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
@@ -499,7 +532,7 @@ pub struct Instance<P: HotProgram> {
 
 impl<P: HotProgram> Instance<P> {
     /// Creates a new [`Instance`] of the given [`Program`].
-    pub fn new(program: P) -> (Self, Task<P::Message>) {
+    pub fn new(program: P) -> (Self, Task<MessageSource<P::Message>>) {
         let (state, task) = program.boot();
 
         (Self { program, state }, task)
@@ -511,17 +544,23 @@ impl<P: HotProgram> Instance<P> {
     }
 
     /// Processes the given message and updates the [`Instance`].
-    pub fn update(&mut self, message: P::Message) -> Task<P::Message> {
+    pub fn update(
+        &mut self,
+        message: MessageSource<P::Message>,
+    ) -> Task<MessageSource<P::Message>> {
         self.program.update(&mut self.state, message)
     }
 
     /// Produces the current widget tree of the [`Instance`].
-    pub fn view(&self, window: window::Id) -> Element<'_, P::Message, P::Theme, P::Renderer> {
+    pub fn view(
+        &self,
+        window: window::Id,
+    ) -> Element<'_, MessageSource<P::Message>, P::Theme, P::Renderer> {
         self.program.view(&self.state, window)
     }
 
     /// Returns the current [`Subscription`] of the [`Instance`].
-    pub fn subscription(&self) -> Subscription<P::Message> {
+    pub fn subscription(&self) -> Subscription<MessageSource<P::Message>> {
         self.program.subscription(&self.state)
     }
 
