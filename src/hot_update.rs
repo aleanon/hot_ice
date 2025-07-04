@@ -148,13 +148,3 @@ where
         self.lib_name
     }
 }
-
-// impl<F, State, Message, C> Update<State, Message> for HotUpdate<F, State, Message>
-// where
-//     F: Fn(&mut State, Message) -> C,
-//     C: Into<Task<Message>>,
-// {
-//     fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>> {
-//         (self.function)(state, message)
-//     }
-// }
