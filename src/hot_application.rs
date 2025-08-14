@@ -25,8 +25,8 @@ use crate::{
 pub fn hot_application<State, Message, Theme, Renderer>(
     dylib_path: &'static str,
     boot: impl boot::Boot<State, Message>,
-    update: impl hot_update::HotUpdateTrait<State, Message>,
-    view: impl for<'a> hot_view::HotViewTrait<'a, State, Message, Theme, Renderer>,
+    update: impl hot_update::IntoHotUpdate<State, Message>,
+    view: impl for<'a> hot_view::IntoHotView<'a, State, Message, Theme, Renderer>,
 ) -> HotIce<impl HotProgram<State = State, Message = Message, Theme = Theme, Renderer = Renderer>>
 where
     State: 'static,
@@ -53,8 +53,8 @@ where
         Theme: Default + theme::Base + 'static,
         Renderer: iced_core::text::Renderer + compositor::Default + 'static,
         Boot: boot::Boot<State, Message>,
-        Update: hot_update::HotUpdateTrait<State, Message>,
-        View: for<'a> hot_view::HotViewTrait<'a, State, Message, Theme, Renderer>,
+        Update: hot_update::IntoHotUpdate<State, Message>,
+        View: for<'a> hot_view::IntoHotView<'a, State, Message, Theme, Renderer>,
     {
         type State = State;
         type Message = Message;

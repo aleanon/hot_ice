@@ -16,24 +16,14 @@ use crate::{
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
 
 pub trait IntoHotSubscription<State, Message> {
-    fn library_name() -> &'static str {
-        let type_name = std::any::type_name::<Self>();
-        let mut iter = type_name.split("::");
-        iter.next().unwrap_or(type_name)
-    }
-
-    fn function_name() -> &'static str {
-        let type_name = std::any::type_name::<Self>();
-        let iter = type_name.split("::");
-        iter.last().unwrap_or(type_name)
-    }
-
     fn static_subscription(&self, state: &State) -> Subscription<Message>;
 
     fn hot_subscription(
         &self,
         state: &State,
         reloaders: &Reloaders,
+        lib_name: &str,
+        function_name: &'static str,
     ) -> Result<Subscription<Message>, HotFunctionError>;
 }
 
@@ -50,9 +40,11 @@ where
         &self,
         state: &State,
         reloaders: &Reloaders,
+        lib_name: &str,
+        function_name: &'static str,
     ) -> Result<Subscription<Message>, HotFunctionError> {
         let reloader = reloaders
-            .get(Self::library_name())
+            .get(lib_name)
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
         let lib = reloader
@@ -60,15 +52,15 @@ where
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&State) -> Subscription<Message>>(Self::function_name().as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(Self::function_name()))?
+            lib.get_symbol::<fn(&State) -> Subscription<Message>>(function_name.as_bytes())
+                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
         };
 
         match catch_unwind(AssertUnwindSafe(|| function(state))) {
             Ok(sub) => Ok(sub),
             Err(err) => {
                 std::mem::forget(err);
-                Err(HotFunctionError::FunctionPaniced(Self::function_name()))
+                Err(HotFunctionError::FunctionPaniced(function_name))
             }
         }
     }
@@ -110,7 +102,10 @@ where
                 .map(MessageSource::Static);
         };
 
-        match self.function.hot_subscription(state, reloaders) {
+        match self
+            .function
+            .hot_subscription(state, reloaders, self.lib_name, self.function_name)
+        {
             Ok(task) => task.map(MessageSource::Dynamic),
             Err(e) => {
                 eprintln!("{}", e);

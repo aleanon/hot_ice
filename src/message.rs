@@ -39,25 +39,6 @@ where
     }
 }
 
-// impl<T> From<T> for HotMessage
-// where
-//     T: DynMessage,
-// {
-//     fn from(message: T) -> Self {
-//         HotMessage::from_message(message)
-//     }
-// }
-
-// impl<T> TryInto<T> for HotMessage
-// where
-//     T: DynMessage,
-// {
-//     type Error = Self;
-//     fn try_into(self) -> Result<T, Self::Error> {
-//         self.into_message()
-//     }
-// }
-
 #[derive(Debug)]
 pub struct HotMessage(pub Box<dyn DynMessage>);
 

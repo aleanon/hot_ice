@@ -14,29 +14,19 @@ use crate::{
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
 
-pub trait HotViewTrait<'a, State, Message, Theme, Renderer> {
-    fn library_name() -> &'static str {
-        let type_name = std::any::type_name::<Self>();
-        let mut iter = type_name.split("::");
-        iter.next().unwrap_or(type_name)
-    }
-
-    fn function_name() -> &'static str {
-        let type_name = std::any::type_name::<Self>();
-        let iter = type_name.split("::");
-        iter.last().unwrap_or(type_name)
-    }
-
+pub trait IntoHotView<'a, State, Message, Theme, Renderer> {
     fn static_view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer>;
 
     fn hot_view(
         &self,
         state: &'a State,
         reloaders: &Reloaders,
+        lib_name: &str,
+        function_name: &'static str,
     ) -> Result<Element<'a, Message, Theme, Renderer>, HotFunctionError>;
 }
 
-impl<'a, T, C, State, Message, Theme, Renderer> HotViewTrait<'a, State, Message, Theme, Renderer>
+impl<'a, T, C, State, Message, Theme, Renderer> IntoHotView<'a, State, Message, Theme, Renderer>
     for T
 where
     State: 'static,
@@ -51,9 +41,11 @@ where
         &self,
         state: &'a State,
         reloaders: &Reloaders,
+        lib_name: &str,
+        function_name: &'static str,
     ) -> Result<Element<'a, Message, Theme, Renderer>, HotFunctionError> {
         let reloader = reloaders
-            .get(Self::library_name())
+            .get(lib_name)
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
         let reloader = reloader.clone();
@@ -63,8 +55,8 @@ where
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&'a State) -> C>(Self::function_name().as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(Self::function_name()))?
+            lib.get_symbol::<fn(&'a State) -> C>(function_name.as_bytes())
+                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
         };
         Ok(function(state).into())
     }
@@ -82,7 +74,7 @@ pub struct HotView<F, State, Message, Theme, Renderer> {
 
 impl<'a, F, State, Message, Theme, Renderer> HotView<F, State, Message, Theme, Renderer>
 where
-    F: HotViewTrait<'a, State, Message, Theme, Renderer>,
+    F: IntoHotView<'a, State, Message, Theme, Renderer>,
     Renderer: iced_core::Renderer + 'a,
     Theme: 'a,
     Message: 'a,
@@ -109,7 +101,10 @@ where
             return self.function.static_view(state).map(MessageSource::Static);
         };
 
-        match self.function.hot_view(state, reloaders) {
+        match self
+            .function
+            .hot_view(state, reloaders, self.lib_name, self.function_name)
+        {
             Ok(element) => element.map(MessageSource::Dynamic),
             Err(err) => {
                 eprintln!("{}", err);
@@ -121,7 +116,7 @@ where
 
 impl<F, State, Message, Theme, Renderer> HotFn for HotView<F, State, Message, Theme, Renderer>
 where
-    F: for<'a> HotViewTrait<'a, State, Message, Theme, Renderer>,
+    F: for<'a> IntoHotView<'a, State, Message, Theme, Renderer>,
 {
     fn library_name(&self) -> &'static str {
         self.lib_name

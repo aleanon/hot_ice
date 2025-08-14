@@ -532,63 +532,6 @@ pub trait Renderer: text::Renderer + compositor::Default {}
 
 impl<T> Renderer for T where T: text::Renderer + compositor::Default {}
 
-/// A particular instance of a running [`Program`].
-#[allow(missing_debug_implementations)]
-pub struct Instance<P: HotProgram> {
-    program: P,
-    state: P::State,
-}
-
-impl<P: HotProgram> Instance<P> {
-    /// Creates a new [`Instance`] of the given [`Program`].
-    pub fn new(program: P) -> (Self, Task<MessageSource<P::Message>>) {
-        let (state, task) = program.boot();
-
-        (Self { program, state }, task)
-    }
-
-    /// Returns the current title of the [`Instance`].
-    pub fn title(&self, window: window::Id) -> String {
-        self.program.title(&self.state, window)
-    }
-
-    /// Processes the given message and updates the [`Instance`].
-    pub fn update(
-        &mut self,
-        message: MessageSource<P::Message>,
-    ) -> Task<MessageSource<P::Message>> {
-        self.program.update(&mut self.state, message)
-    }
-
-    /// Produces the current widget tree of the [`Instance`].
-    pub fn view(
-        &self,
-        window: window::Id,
-    ) -> Element<'_, MessageSource<P::Message>, P::Theme, P::Renderer> {
-        self.program.view(&self.state, window)
-    }
-
-    /// Returns the current [`Subscription`] of the [`Instance`].
-    pub fn subscription(&self) -> Subscription<MessageSource<P::Message>> {
-        self.program.subscription(&self.state)
-    }
-
-    /// Returns the current theme of the [`Instance`].
-    pub fn theme(&self, window: window::Id) -> P::Theme {
-        self.program.theme(&self.state, window)
-    }
-
-    /// Returns the current [`theme::Style`] of the [`Instance`].
-    pub fn style(&self, theme: &P::Theme) -> theme::Style {
-        self.program.style(&self.state, theme)
-    }
-
-    /// Returns the current scale factor of the [`Instance`].
-    pub fn scale_factor(&self, window: window::Id) -> f64 {
-        self.program.scale_factor(&self.state, window)
-    }
-}
-
 /// A trait alias for the [`Message`](Program::Message) of a [`Program`].
 #[cfg(feature = "time-travel")]
 pub trait Message: Send + std::fmt::Debug + Clone {}

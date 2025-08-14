@@ -19,19 +19,7 @@ use crate::{
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
 
-pub trait HotUpdateTrait<State, Message> {
-    fn library_name() -> &'static str {
-        let type_name = std::any::type_name::<Self>();
-        let mut iter = type_name.split("::");
-        iter.next().unwrap_or(type_name)
-    }
-
-    fn function_name() -> &'static str {
-        let type_name = std::any::type_name::<Self>();
-        let iter = type_name.split("::");
-        iter.last().unwrap_or(type_name)
-    }
-
+pub trait IntoHotUpdate<State, Message> {
     fn static_update(&self, state: &mut State, message: Message) -> Task<Message>;
 
     fn hot_update(
@@ -39,10 +27,12 @@ pub trait HotUpdateTrait<State, Message> {
         state: &mut State,
         message: Message,
         reloaders: &Reloaders,
+        lib_name: &str,
+        function_name: &'static str,
     ) -> Result<Task<Message>, HotFunctionError>;
 }
 
-impl<T, C, State, Message> HotUpdateTrait<State, Message> for T
+impl<T, C, State, Message> IntoHotUpdate<State, Message> for T
 where
     T: Fn(&mut State, Message) -> C,
     C: Into<Task<Message>> + 'static,
@@ -58,9 +48,11 @@ where
         state: &mut State,
         message: Message,
         reloaders: &Reloaders,
+        lib_name: &str,
+        function_name: &'static str,
     ) -> Result<Task<Message>, HotFunctionError> {
         let reloader = reloaders
-            .get(Self::library_name())
+            .get(lib_name)
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
         let mut state = unsafe { UnsafeRefMut::new(state) };
@@ -72,15 +64,15 @@ where
                 .map_err(|_| HotFunctionError::LockAcquisitionError)?;
 
             let function = unsafe {
-                lib.get_symbol::<fn(&mut State, Message) -> C>(Self::function_name().as_bytes())
-                    .map_err(|_| HotFunctionError::FunctionNotFound(Self::function_name()))?
+                lib.get_symbol::<fn(&mut State, Message) -> C>(function_name.as_bytes())
+                    .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
             };
 
             let task = UnsafeMover::new(function(&mut *state, message));
             Ok::<UnsafeMover<C>, HotFunctionError>(task)
         })
         .join()
-        .map_err(|_| HotFunctionError::FunctionPaniced(Self::function_name()))?
+        .map_err(|_| HotFunctionError::FunctionPaniced(function_name))?
         .and_then(|task| Ok(task.to_owned().into()))
     }
 }
@@ -96,7 +88,7 @@ pub struct HotUpdate<F, State, Message> {
 impl<F, State, Message> HotUpdate<F, State, Message>
 where
     Message: DynMessage + Clone,
-    F: HotUpdateTrait<State, Message>,
+    F: IntoHotUpdate<State, Message>,
 {
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
@@ -131,7 +123,13 @@ where
                         .map(MessageSource::Static);
                 };
 
-                match self.function.hot_update(state, message.clone(), reloaders) {
+                match self.function.hot_update(
+                    state,
+                    message.clone(),
+                    reloaders,
+                    self.lib_name,
+                    self.function_name,
+                ) {
                     Ok(task) => task.map(MessageSource::Dynamic),
                     Err(e) => {
                         eprintln!("{}", e);
@@ -147,7 +145,7 @@ where
 
 impl<F, State, Message> HotFn for HotUpdate<F, State, Message>
 where
-    F: HotUpdateTrait<State, Message>,
+    F: IntoHotUpdate<State, Message>,
 {
     fn library_name(&self) -> &'static str {
         self.lib_name
