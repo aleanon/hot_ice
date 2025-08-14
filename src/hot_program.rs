@@ -527,21 +527,7 @@ pub fn with_executor<P: HotProgram, E: Executor>(
     }
 }
 
-/// The renderer of some [`Program`].
+///The renderer of some [`Program`].
 pub trait Renderer: text::Renderer + compositor::Default {}
 
 impl<T> Renderer for T where T: text::Renderer + compositor::Default {}
-
-/// A trait alias for the [`Message`](Program::Message) of a [`Program`].
-#[cfg(feature = "time-travel")]
-pub trait Message: Send + std::fmt::Debug + Clone {}
-
-#[cfg(feature = "time-travel")]
-impl<T: Send + std::fmt::Debug + Clone> Message for T {}
-
-/// A trait alias for the [`Message`](Program::Message) of a [`Program`].
-#[cfg(not(feature = "time-travel"))]
-pub trait Message: Send + std::fmt::Debug {}
-
-#[cfg(not(feature = "time-travel"))]
-impl<T: Send + std::fmt::Debug> Message for T {}

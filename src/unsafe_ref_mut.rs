@@ -1,34 +1,5 @@
 use std::ops::{Deref, DerefMut};
 
-/// [UnsafeRef] wrapps an immutable raw pointer to type `T` and implements [Send]
-/// so a reference can be sent across threads/async boundaries without reference counting.
-/// The user needs to make sure that the value pointed to is not dropped, not moved in memory and not mutated
-/// while the [UnsafeRef] is in use.
-pub struct UnsafeRef<T: ?Sized>(*const T);
-
-impl<T: ?Sized> UnsafeRef<T> {
-    pub unsafe fn new(value: &T) -> Self {
-        Self(value as *const T)
-    }
-}
-
-impl<T: ?Sized> Deref for UnsafeRef<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.0 }
-    }
-}
-
-impl<T: ?Sized> Clone for UnsafeRef<T> {
-    fn clone(&self) -> Self {
-        Self(self.0)
-    }
-}
-
-impl<T: ?Sized> Copy for UnsafeRef<T> {}
-
-unsafe impl<T: ?Sized> Send for UnsafeRef<T> {}
-
 /// [UnsafeRefMut] (Mutable Unsafe Reference) wrapps a mutable raw pointer to type `T` and implements [Send]
 /// so a mutable reference can be sent across threads/async boundaries without reference counting.
 /// The user needs to make sure that the value pointed to is not dropped, not moved in memory and still only has one mutable reference at any time.
