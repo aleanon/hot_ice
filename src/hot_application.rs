@@ -400,16 +400,14 @@ pub fn register_hot_lib(
         let lib = lib_reloader.clone();
 
         std::thread::spawn(move || loop {
-            let Ok(_) = change_subscriber.recv() else {
-                panic!("Sub channel closed")
-            };
+            change_subscriber.recv().expect("Sub channel closed");
+
             if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
                 println!("{err}")
             }
 
-            let Ok(_ready_to_reload) = update_ch_rx.recv() else {
-                panic!("Update Channel closed")
-            };
+            update_ch_rx.recv().expect("Update Channel closed");
+
             loop {
                 if let Ok(mut lib_reloader) = lib.lock() {
                     if let Err(err) = lib_reloader.update() {
@@ -421,9 +419,9 @@ pub fn register_hot_lib(
                 std::thread::sleep(Duration::from_millis(1));
             }
 
-            if let Err(_) = subscription_ch_tx.send(ReloadEvent::ReloadComplete) {
-                panic!("Subscription Channel closed")
-            }
+            subscription_ch_tx
+                .send(ReloadEvent::ReloadComplete)
+                .expect("Subscription channel closed");
         });
         lib_reloader
     });
