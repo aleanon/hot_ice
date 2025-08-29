@@ -12,7 +12,7 @@ use iced_core::{
     window, Element, Length, Theme,
 };
 use iced_futures::{futures::Stream, stream, Subscription};
-use iced_widget::{container, pop, text, themer};
+use iced_widget::{container, sensor, text, themer};
 use iced_winit::{program::Program, runtime::Task};
 use once_cell::sync::OnceCell;
 
@@ -212,7 +212,7 @@ where
             program.view(&self.state, window).map(Message::AppMessage)
         } else {
             let content = container(
-                pop(text("Reloading...").size(20))
+                sensor(text("Reloading...").size(20))
                     .key(self.pop_key)
                     .on_show(|_| Message::SendReadySignal),
             )
