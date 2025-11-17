@@ -48,8 +48,6 @@ where
             .get(lib_name)
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
-        let reloader = reloader.clone();
-
         let lib = reloader
             .try_lock()
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;

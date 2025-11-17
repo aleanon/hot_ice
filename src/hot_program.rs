@@ -1,9 +1,12 @@
 //! The definition of an iced program.
 
+use iced_core::renderer;
 use iced_core::text;
 use iced_core::theme;
 use iced_core::window;
 use iced_core::Element;
+use iced_core::Font;
+use iced_core::Settings;
 use iced_futures::{Executor, Subscription};
 use iced_winit::graphics::compositor;
 use iced_winit::runtime::Task;
@@ -26,7 +29,7 @@ pub trait HotProgram: Sized {
     type Message: DynMessage + Clone;
 
     /// The theme of the program.
-    type Theme: Default + theme::Base;
+    type Theme: theme::Base;
 
     /// The renderer of the program.
     type Renderer: Renderer;
@@ -49,7 +52,10 @@ pub trait HotProgram: Sized {
         &self,
         state: &'a Self::State,
         window: window::Id,
-    ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>;
+    ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+    where
+        Self::Theme: 'a,
+        Self::Renderer: 'a;
 
     fn title(&self, _state: &Self::State, _window: window::Id) -> String {
         let mut title = String::new();
@@ -84,15 +90,19 @@ pub trait HotProgram: Sized {
         Subscription::none()
     }
 
-    fn theme(&self, _state: &Self::State, _window: window::Id) -> Self::Theme {
-        <Self::Theme as Default>::default()
+    fn theme(&self, _state: &Self::State, _window: window::Id) -> Option<Self::Theme> {
+        None
     }
+
+    fn settings(&self) -> Settings;
+
+    fn window(&self) -> Option<window::Settings>;
 
     fn style(&self, _state: &Self::State, theme: &Self::Theme) -> theme::Style {
         theme::Base::base(theme)
     }
 
-    fn scale_factor(&self, _state: &Self::State, _window: window::Id) -> f64 {
+    fn scale_factor(&self, _state: &Self::State, _window: window::Id) -> f32 {
         1.0
     }
 }
@@ -148,12 +158,24 @@ pub fn with_title<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        where
+            Self::Theme: 'a,
+            Self::Renderer: 'a,
+        {
             self.program.view(state, window)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
             self.program.theme(state, window)
+        }
+
+        fn settings(&self) -> Settings {
+            self.program.settings()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            self.program.window()
         }
 
         fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
@@ -164,7 +186,7 @@ pub fn with_title<P: HotProgram>(
             self.program.style(state, theme)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
             self.program.scale_factor(state, window)
         }
     }
@@ -221,15 +243,27 @@ pub fn with_subscription<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        where
+            Self::Theme: 'a,
+            Self::Renderer: 'a,
+        {
             self.program.view(state, window)
+        }
+
+        fn settings(&self) -> Settings {
+            self.program.settings()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            self.program.window()
         }
 
         fn title(&self, state: &Self::State, window: window::Id) -> String {
             self.program.title(state, window)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
             self.program.theme(state, window)
         }
 
@@ -237,7 +271,7 @@ pub fn with_subscription<P: HotProgram>(
             self.program.style(state, theme)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
             self.program.scale_factor(state, window)
         }
     }
@@ -251,7 +285,7 @@ pub fn with_subscription<P: HotProgram>(
 /// Decorates a [`Program`] with the given theme function.
 pub fn with_theme<P: HotProgram>(
     program: P,
-    f: impl Fn(&P::State, window::Id) -> P::Theme,
+    f: impl Fn(&P::State, window::Id) -> Option<P::Theme>,
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
     struct WithTheme<P, F> {
         program: P,
@@ -260,7 +294,7 @@ pub fn with_theme<P: HotProgram>(
 
     impl<P: HotProgram, F> HotProgram for WithTheme<P, F>
     where
-        F: Fn(&P::State, window::Id) -> P::Theme,
+        F: Fn(&P::State, window::Id) -> Option<P::Theme>,
     {
         type State = P::State;
         type Message = P::Message;
@@ -268,7 +302,7 @@ pub fn with_theme<P: HotProgram>(
         type Renderer = P::Renderer;
         type Executor = P::Executor;
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
             (self.theme)(state, window)
         }
 
@@ -296,8 +330,20 @@ pub fn with_theme<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        where
+            Self::Theme: 'a,
+            Self::Renderer: 'a,
+        {
             self.program.view(state, window)
+        }
+
+        fn settings(&self) -> Settings {
+            self.program.settings()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            self.program.window()
         }
 
         fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
@@ -308,7 +354,7 @@ pub fn with_theme<P: HotProgram>(
             self.program.style(state, theme)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
             self.program.scale_factor(state, window)
         }
     }
@@ -364,19 +410,31 @@ pub fn with_style<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        where
+            Self::Theme: 'a,
+            Self::Renderer: 'a,
+        {
             self.program.view(state, window)
+        }
+
+        fn settings(&self) -> Settings {
+            self.program.settings()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            self.program.window()
         }
 
         fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
             self.program.theme(state, window)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
             self.program.scale_factor(state, window)
         }
     }
@@ -387,7 +445,7 @@ pub fn with_style<P: HotProgram>(
 /// Decorates a [`Program`] with the given scale factor function.
 pub fn with_scale_factor<P: HotProgram>(
     program: P,
-    f: impl Fn(&P::State, window::Id) -> f64,
+    f: impl Fn(&P::State, window::Id) -> f32,
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
     struct WithScaleFactor<P, F> {
         program: P,
@@ -396,7 +454,7 @@ pub fn with_scale_factor<P: HotProgram>(
 
     impl<P: HotProgram, F> HotProgram for WithScaleFactor<P, F>
     where
-        F: Fn(&P::State, window::Id) -> f64,
+        F: Fn(&P::State, window::Id) -> f32,
     {
         type State = P::State;
         type Message = P::Message;
@@ -428,15 +486,27 @@ pub fn with_scale_factor<P: HotProgram>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        where
+            Self::Theme: 'a,
+            Self::Renderer: 'a,
+        {
             self.program.view(state, window)
+        }
+
+        fn settings(&self) -> Settings {
+            self.program.settings()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            self.program.window()
         }
 
         fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
             self.program.theme(state, window)
         }
 
@@ -444,7 +514,7 @@ pub fn with_scale_factor<P: HotProgram>(
             self.program.style(state, theme)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
             (self.scale_factor)(state, window)
         }
     }
@@ -500,15 +570,27 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             &self,
             state: &'a Self::State,
             window: window::Id,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        where
+            Self::Theme: 'a,
+            Self::Renderer: 'a,
+        {
             self.program.view(state, window)
+        }
+
+        fn settings(&self) -> Settings {
+            self.program.settings()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            self.program.window()
         }
 
         fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
             self.program.subscription(state)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
             self.program.theme(state, window)
         }
 
@@ -516,7 +598,7 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             self.program.style(state, theme)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
             self.program.scale_factor(state, window)
         }
     }
@@ -528,6 +610,9 @@ pub fn with_executor<P: HotProgram, E: Executor>(
 }
 
 ///The renderer of some [`Program`].
-pub trait Renderer: text::Renderer + compositor::Default {}
+pub trait Renderer: text::Renderer<Font = Font> + compositor::Default + renderer::Headless {}
 
-impl<T> Renderer for T where T: text::Renderer + compositor::Default {}
+impl<T> Renderer for T where
+    T: text::Renderer<Font = Font> + compositor::Default + renderer::Headless
+{
+}

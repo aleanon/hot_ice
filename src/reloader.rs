@@ -8,8 +8,8 @@ use crossfire::mpmc::{
     RxBlocking, RxFuture, SharedSenderBRecvF, SharedSenderFRecvB, TxBlocking, TxFuture,
 };
 use iced_core::{
-    theme::{self, Base},
-    window, Element, Length, Theme,
+    theme::{self, Base, Mode},
+    window, Element, Length, Settings, Theme,
 };
 use iced_futures::{futures::Stream, stream, Subscription};
 use iced_widget::{container, sensor, text, themer};
@@ -79,6 +79,14 @@ where
         state.view(&self.program, window)
     }
 
+    fn settings(&self) -> Settings {
+        Settings::default()
+    }
+
+    fn window(&self) -> Option<window::Settings> {
+        Some(window::Settings::default())
+    }
+
     fn title(&self, state: &Self::State, window: window::Id) -> String {
         state.title(&self.program, window)
     }
@@ -87,7 +95,7 @@ where
         state.subscription(&self.program)
     }
 
-    fn theme(&self, state: &Self::State, window: window::Id) -> Self::Theme {
+    fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
         state.theme(&self.program, window)
     }
 
@@ -95,7 +103,7 @@ where
         state.style(&self.program, theme)
     }
 
-    fn scale_factor(&self, state: &Self::State, window: window::Id) -> f64 {
+    fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
         state.scale_factor(&self.program, window)
     }
 }
@@ -151,7 +159,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     state: P::State,
     libraries_reloading: u16,
     update_ch_tx: TxFuture<ReadyToReload, SharedSenderFRecvB>,
-    pop_key: u16,
+    sensor_key: u16,
 }
 
 impl<'a, P> Reloader<P>
@@ -169,7 +177,7 @@ where
             state,
             libraries_reloading: 0,
             update_ch_tx,
-            pop_key: 0,
+            sensor_key: 0,
         };
 
         (reloader, task.map(Message::AppMessage))
@@ -188,7 +196,7 @@ where
             }
             Message::AboutToReload => {
                 self.libraries_reloading += 1;
-                self.pop_key += 1;
+                self.sensor_key += 1;
                 Task::none()
             }
             Message::SendReadySignal => {
@@ -213,19 +221,20 @@ where
         } else {
             let content = container(
                 sensor(text("Reloading...").size(20))
-                    .key(self.pop_key)
+                    .key(self.sensor_key)
                     .on_show(|_| Message::SendReadySignal),
             )
             .center_x(Length::Fill)
             .center_y(Length::Fill);
 
-            let theme = program.theme(&self.state, window);
+            let theme = program
+                .theme(&self.state, window)
+                .unwrap_or(P::Theme::default(Mode::default()));
 
             let derive_theme = move || {
                 theme
                     .palette()
                     .map(|palette| Theme::custom("reloader".to_string(), palette))
-                    .unwrap_or_default()
             };
 
             themer(derive_theme(), content).into()
@@ -243,7 +252,7 @@ where
         program.title(&self.state, window)
     }
 
-    pub fn theme(&self, program: &P, window: window::Id) -> P::Theme {
+    pub fn theme(&self, program: &P, window: window::Id) -> Option<P::Theme> {
         program.theme(&self.state, window)
     }
 
@@ -251,7 +260,7 @@ where
         program.style(&self.state, theme)
     }
 
-    pub fn scale_factor(&self, program: &P, window: window::Id) -> f64 {
+    pub fn scale_factor(&self, program: &P, window: window::Id) -> f32 {
         program.scale_factor(&self.state, window)
     }
 

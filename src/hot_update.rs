@@ -2,19 +2,15 @@ use std::{
     any::type_name,
     collections::HashMap,
     marker::PhantomData,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex},
 };
 
 use iced_winit::runtime::Task;
 
 use crate::{
-    error::HotFunctionError,
-    hot_fn::HotFn,
-    lib_reloader::LibReloader,
-    message::MessageSource,
-    reloader::LIB_RELOADER,
-    unsafe_ref_mut::{UnsafeMover, UnsafeRefMut},
-    DynMessage,
+    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
+    reloader::LIB_RELOADER, DynMessage,
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
@@ -55,25 +51,22 @@ where
             .get(lib_name)
             .ok_or(HotFunctionError::LibraryNotFound)?;
 
-        let mut state = unsafe { UnsafeRefMut::new(state) };
-        let reloader = reloader.clone();
+        let lib = reloader
+            .try_lock()
+            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
 
-        std::thread::spawn(move || {
-            let lib = reloader
-                .try_lock()
-                .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+        let function = unsafe {
+            lib.get_symbol::<fn(&mut State, Message) -> C>(function_name.as_bytes())
+                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+        };
 
-            let function = unsafe {
-                lib.get_symbol::<fn(&mut State, Message) -> C>(function_name.as_bytes())
-                    .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
-            };
-
-            let task = UnsafeMover::new(function(&mut *state, message));
-            Ok::<UnsafeMover<C>, HotFunctionError>(task)
-        })
-        .join()
-        .map_err(|_| HotFunctionError::FunctionPaniced(function_name))?
-        .and_then(|task| Ok(task.to_owned().into()))
+        match catch_unwind(AssertUnwindSafe(|| function(state, message))) {
+            Ok(sub) => Ok(sub.into()),
+            Err(err) => {
+                std::mem::forget(err);
+                Err(HotFunctionError::FunctionPaniced(function_name))
+            }
+        }
     }
 }
 

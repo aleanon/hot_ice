@@ -7,13 +7,14 @@ use std::{
 
 use iced_core::{theme, window, Element, Font, Settings, Size};
 use iced_futures::Executor;
-use iced_winit::{graphics::compositor, runtime::Task, Error};
+use iced_winit::{runtime::Task, Error};
 
 use crate::{
     boot,
     hot_fn::HotFn,
     hot_program::{self, HotProgram},
     hot_subscription::IntoHotSubscription,
+    hot_theme::ThemeFn,
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
@@ -31,8 +32,8 @@ pub fn hot_application<State, Message, Theme, Renderer>(
 where
     State: 'static,
     Message: DynMessage + Clone,
-    Theme: Default + theme::Base + 'static,
-    Renderer: iced_core::text::Renderer + compositor::Default + 'static,
+    Theme: theme::Base,
+    Renderer: hot_program::Renderer,
 {
     let hot_view = HotView::new(view);
     let hot_update = HotUpdate::new(update);
@@ -50,8 +51,8 @@ where
     where
         State: 'static,
         Message: DynMessage + Clone,
-        Theme: Default + theme::Base + 'static,
-        Renderer: iced_core::text::Renderer + compositor::Default + 'static,
+        Theme: theme::Base,
+        Renderer: hot_program::Renderer,
         Boot: boot::Boot<State, Message>,
         Update: hot_update::IntoHotUpdate<State, Message>,
         View: for<'a> hot_view::IntoHotView<'a, State, Message, Theme, Renderer>,
@@ -85,8 +86,20 @@ where
             &self,
             state: &'a Self::State,
             _window: window::Id,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer> {
+        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        where
+            Theme: 'a,
+            Renderer: 'a,
+        {
             self.view.view(state)
+        }
+
+        fn settings(&self) -> Settings {
+            Settings::default()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            Some(window::Settings::default())
         }
     }
 
@@ -129,7 +142,7 @@ where
             iced_devtools::attach(program)
         };
 
-        iced_winit::run(program, self.settings, Some(self.window))
+        iced_winit::run(program)
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
@@ -289,10 +302,10 @@ where
     /// Sets the theme logic of the [`Application`].
     pub fn theme(
         self,
-        f: impl Fn(&P::State) -> P::Theme,
+        f: impl ThemeFn<P::State, P::Theme>,
     ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: hot_program::with_theme(self.program, move |state, _window| f(state)),
+            program: hot_program::with_theme(self.program, move |state, _window| f.theme(state)),
             settings: self.settings,
             window: self.window,
         }
@@ -313,7 +326,7 @@ where
     /// Sets the scale factor of the [`Application`].
     pub fn scale_factor(
         self,
-        f: impl Fn(&P::State) -> f64,
+        f: impl Fn(&P::State) -> f32,
     ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
             program: hot_program::with_scale_factor(self.program, move |state, _window| f(state)),
@@ -395,6 +408,7 @@ pub fn register_hot_lib(
             None,
         )
         .expect("Unable to create LibReloader");
+
         let change_subscriber = lib_reloader.subscribe_to_file_changes();
         let lib_reloader = Arc::new(Mutex::new(lib_reloader));
         let lib = lib_reloader.clone();
