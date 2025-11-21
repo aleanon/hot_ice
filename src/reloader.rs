@@ -4,29 +4,24 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crossfire::mpmc::{
-    RxBlocking, RxFuture, SharedSenderBRecvF, SharedSenderFRecvB, TxBlocking, TxFuture,
-};
+use crossfire::{MAsyncRx, MAsyncTx, MRx, MTx};
 use iced_core::{
+    Element, Length, Settings, Theme,
     theme::{self, Base, Mode},
-    window, Element, Length, Settings, Theme,
+    window,
 };
-use iced_futures::{futures::Stream, stream, Subscription};
+use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{container, sensor, text, themer};
 use iced_winit::{program::Program, runtime::Task};
 use once_cell::sync::OnceCell;
 
 use crate::{hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource};
 
-pub static SUBSCRIPTION_CHANNEL: OnceCell<(
-    TxBlocking<ReloadEvent, SharedSenderBRecvF>,
-    RxFuture<ReloadEvent, SharedSenderBRecvF>,
-)> = OnceCell::new();
+pub static SUBSCRIPTION_CHANNEL: OnceCell<(MTx<ReloadEvent>, MAsyncRx<ReloadEvent>)> =
+    OnceCell::new();
 
-pub static UPDATE_CHANNEL: OnceCell<(
-    TxFuture<ReadyToReload, SharedSenderFRecvB>,
-    RxBlocking<ReadyToReload, SharedSenderFRecvB>,
-)> = OnceCell::new();
+pub static UPDATE_CHANNEL: OnceCell<(MAsyncTx<ReadyToReload>, MRx<ReadyToReload>)> =
+    OnceCell::new();
 
 pub static LIB_RELOADER: OnceCell<HashMap<&'static str, Arc<Mutex<LibReloader>>>> = OnceCell::new();
 
@@ -158,7 +153,7 @@ pub struct ReadyToReload;
 pub struct Reloader<P: HotProgram + 'static> {
     state: P::State,
     libraries_reloading: u16,
-    update_ch_tx: TxFuture<ReadyToReload, SharedSenderFRecvB>,
+    update_ch_tx: MAsyncTx<ReadyToReload>,
     sensor_key: u16,
 }
 
@@ -169,7 +164,7 @@ where
 {
     pub fn new(program: &P) -> (Self, Task<Message<P>>) {
         let (update_ch_tx, _) = UPDATE_CHANNEL
-            .get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1))
+            .get_or_init(|| crossfire::mpmc::bounded_tx_async_rx_blocking(1))
             .clone();
 
         let (state, task) = program.boot();
@@ -266,22 +261,24 @@ where
 
     fn listen_for_lib_change() -> impl Stream<Item = Message<P>> {
         let rx = SUBSCRIPTION_CHANNEL.get().unwrap().1.clone();
-        stream::channel(10, async move |mut output| loop {
-            match rx.recv().await {
-                Ok(message) => match message {
-                    ReloadEvent::AboutToReload => {
-                        if let Err(err) = output.try_send(Message::AboutToReload) {
-                            println!("Failed to send reloading message: {err}")
+        stream::channel(10, async move |mut output| {
+            loop {
+                match rx.recv().await {
+                    Ok(message) => match message {
+                        ReloadEvent::AboutToReload => {
+                            if let Err(err) = output.try_send(Message::AboutToReload) {
+                                println!("Failed to send reloading message: {err}")
+                            }
                         }
-                    }
-                    ReloadEvent::ReloadComplete => {
-                        if let Err(err) = output.try_send(Message::ReloadComplete) {
-                            println!("Failed to send reload complete message: {err}")
+                        ReloadEvent::ReloadComplete => {
+                            if let Err(err) = output.try_send(Message::ReloadComplete) {
+                                println!("Failed to send reload complete message: {err}")
+                            }
                         }
+                    },
+                    Err(err) => {
+                        println!("{err}")
                     }
-                },
-                Err(err) => {
-                    println!("{err}")
                 }
             }
         })

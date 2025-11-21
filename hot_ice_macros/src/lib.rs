@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, Ident, ItemFn};
+use syn::{Ident, ItemFn, parse_macro_input};
 
 /// Attribute macro that transforms an update function to handle DynMessage conversion.
 ///
@@ -37,11 +37,11 @@ pub fn hot_update(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let vis = &input.vis;
 
     let expanded = quote! {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         #vis fn #original_fn_name(
             &mut self,
             message: hot_ice::HotMessage,
-        ) -> hot_ice::HotTask<hot_ice::HotMessage> {
+        ) -> Task<hot_ice::HotMessage> {
             let message = message.into_message().unwrap();
 
             Self::#inner_fn_ident(self, message)
@@ -86,8 +86,8 @@ pub fn hot_view(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let vis = &input.vis;
 
     let expanded = quote! {
-        #[no_mangle]
-        #vis fn #original_fn_name(&self) -> hot_ice::HotElement<hot_ice::HotMessage> {
+        #[unsafe(no_mangle)]
+        #vis fn #original_fn_name(&self) -> Element<hot_ice::HotMessage> {
             Self::#inner_fn_ident(&self)
                 .map(hot_ice::DynMessage::into_hot_message)
         }

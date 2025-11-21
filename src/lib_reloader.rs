@@ -5,8 +5,9 @@ use notify_debouncer_full::new_debouncer;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, Ordering},
-    mpsc, Arc, Mutex,
+    mpsc,
 };
 use std::thread;
 use std::time::Duration;
@@ -316,7 +317,7 @@ impl LibReloader {
     ) -> Result<Symbol<'lib, T>, HotReloaderError> {
         match &self.lib {
             None => Err(HotReloaderError::LibraryNotLoaded),
-            Some(lib) => Ok(lib.get(name)?),
+            Some(lib) => Ok(unsafe { lib.get(name)? }),
         }
     }
 
@@ -369,9 +370,7 @@ fn watched_and_loaded_library_paths(
             //     result.replace("{uuid}", &uuid::Uuid::new_v4().to_string())
             // }
             // #[cfg(not(feature = "uuid"))]
-            {
-                result
-            }
+            result
         }
         None => format!("{lib_name}-hot-{load_counter}"),
     };

@@ -5,12 +5,12 @@ use std::{
     time::Duration,
 };
 
-use iced_core::{theme, window, Element, Font, Settings, Size};
+use iced_core::{Element, Font, Settings, Size, theme, window};
 use iced_futures::Executor;
-use iced_winit::{runtime::Task, Error};
+use iced_winit::{Error, runtime::Task};
 
 use crate::{
-    boot,
+    DynMessage, boot,
     hot_fn::HotFn,
     hot_program::{self, HotProgram},
     hot_subscription::IntoHotSubscription,
@@ -19,8 +19,7 @@ use crate::{
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
     message::MessageSource,
-    reloader::{Reload, ReloadEvent, LIB_RELOADER, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL},
-    DynMessage,
+    reloader::{LIB_RELOADER, Reload, ReloadEvent, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL},
 };
 
 pub fn hot_application<State, Message, Theme, Renderer>(
@@ -395,10 +394,10 @@ pub fn register_hot_lib(
 ) {
     lib_reloaders.entry(f.library_name()).or_insert_with(|| {
         let (_, update_ch_rx) = UPDATE_CHANNEL
-            .get_or_init(|| crossfire::mpmc::bounded_tx_future_rx_blocking(1))
+            .get_or_init(|| crossfire::mpmc::bounded_tx_async_rx_blocking(1))
             .clone();
         let (subscription_ch_tx, _) = SUBSCRIPTION_CHANNEL
-            .get_or_init(|| crossfire::mpmc::bounded_tx_blocking_rx_future(1))
+            .get_or_init(|| crossfire::mpmc::bounded_tx_blocking_rx_async(1))
             .clone();
 
         let mut lib_reloader = LibReloader::new(
@@ -413,29 +412,31 @@ pub fn register_hot_lib(
         let lib_reloader = Arc::new(Mutex::new(lib_reloader));
         let lib = lib_reloader.clone();
 
-        std::thread::spawn(move || loop {
-            change_subscriber.recv().expect("Sub channel closed");
-
-            if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
-                println!("{err}")
-            }
-
-            update_ch_rx.recv().expect("Update Channel closed");
-
+        std::thread::spawn(move || {
             loop {
-                if let Ok(mut lib_reloader) = lib.lock() {
-                    if let Err(err) = lib_reloader.update() {
-                        println!("{err}")
-                    } else {
-                        break;
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
+                change_subscriber.recv().expect("Sub channel closed");
 
-            subscription_ch_tx
-                .send(ReloadEvent::ReloadComplete)
-                .expect("Subscription channel closed");
+                if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
+                    println!("{err}")
+                }
+
+                update_ch_rx.recv().expect("Update Channel closed");
+
+                loop {
+                    if let Ok(mut lib_reloader) = lib.lock() {
+                        if let Err(err) = lib_reloader.update() {
+                            println!("{err}")
+                        } else {
+                            break;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+
+                subscription_ch_tx
+                    .send(ReloadEvent::ReloadComplete)
+                    .expect("Subscription channel closed");
+            }
         });
         lib_reloader
     });

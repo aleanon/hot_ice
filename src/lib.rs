@@ -15,3 +15,5 @@ mod reloader;
 
 pub use hot_application::hot_application;
 pub use message::{DynMessage, HotMessage};
+
+pub use hot_ice_macros::{hot_update, hot_view};

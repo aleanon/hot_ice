@@ -1,7 +1,7 @@
 [package]
 name = "hot_ice"
 version = "0.1.92"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["lib"]
@@ -11,14 +11,15 @@ debug = ["dep:iced_devtools", "dep:iced_debug"]
 time-travel = ["iced_devtools/time-travel"]
 
 [dependencies]
+hot_ice_macros = { path = "hot_ice_macros" }
 once_cell = "1.21.3"
-crossfire = "1.0.1"
+crossfire = "2.1.7"
 libloading = "^0.8"
 log = "^0.4"
-notify = "8.0.0"
-notify-debouncer-full = "0.5.0"
+notify = "8.2.0"
+notify-debouncer-full = "0.6.0"
 thiserror = "2.0"
-crc32fast = "1.3.2"
+crc32fast = "1.5.0"
 iced_winit = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
 iced_core = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
 iced_futures = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
