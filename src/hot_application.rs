@@ -1,8 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use iced_core::{Element, Font, Settings, Size, theme, window};
@@ -11,7 +9,6 @@ use iced_winit::{Error, runtime::Task};
 
 use crate::{
     DynMessage, boot,
-    hot_fn::HotFn,
     hot_program::{self, HotProgram},
     hot_subscription::IntoHotSubscription,
     hot_theme::ThemeFn,
@@ -19,13 +16,10 @@ use crate::{
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
     message::MessageSource,
-    reloader::{
-        FunctionState, LIB_RELOADER, Reload, ReloadEvent, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
-    },
+    reloader::{FunctionState, Reload, ReloaderSettings},
 };
 
 pub fn hot_application<State, Message, Theme, Renderer>(
-    dylib_path: &'static str,
     boot: impl boot::Boot<State, Message>,
     update: impl hot_update::IntoHotUpdate<State, Message>,
     view: impl for<'a> hot_view::IntoHotView<'a, State, Message, Theme, Renderer>,
@@ -44,7 +38,9 @@ where
         "Application must be defined in a single library crate"
     );
 
-    initiate_lib_reloaders(&hot_view, &hot_update, dylib_path);
+    let lib_name = hot_view.lib_name;
+
+    // initiate_lib_reloaders(&hot_view, &hot_update, dylib_path);
 
     struct Instance<State, Message, Theme, Renderer, Boot, Update, View> {
         boot: Boot,
@@ -85,8 +81,9 @@ where
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Task<MessageSource<Self::Message>> {
-            self.update.update(state, message, fn_state)
+            self.update.update(state, message, fn_state, reloader)
         }
 
         fn view<'a>(
@@ -94,12 +91,13 @@ where
             state: &'a Self::State,
             _window: window::Id,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Theme: 'a,
             Renderer: 'a,
         {
-            self.view.view(state, fn_state)
+            self.view.view(state, fn_state, reloader)
         }
 
         fn settings(&self) -> Settings {
@@ -108,10 +106,6 @@ where
 
         fn window(&self) -> Option<window::Settings> {
             Some(window::Settings::default())
-        }
-
-        fn library_name(&self) -> Option<&str> {
-            Some(self.view.lib_name)
         }
     }
 
@@ -123,6 +117,8 @@ where
         },
         settings: Settings::default(),
         window: window::Settings::default(),
+        reloader_settings: ReloaderSettings::default(),
+        lib_name,
     }
 }
 
@@ -133,6 +129,8 @@ where
     program: P,
     settings: Settings,
     window: window::Settings,
+    reloader_settings: ReloaderSettings,
+    lib_name: &'static str,
 }
 
 impl<P> HotIce<P>
@@ -141,7 +139,7 @@ where
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {
-        let program = Reload::new(self.program);
+        let program = Reload::new(self.program, self.reloader_settings, self.lib_name);
 
         #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
         let program = {
@@ -155,6 +153,13 @@ where
         };
 
         iced_winit::run(program)
+    }
+
+    pub fn reloader_settings(self, reloader_settings: ReloaderSettings) -> Self {
+        Self {
+            reloader_settings,
+            ..self
+        }
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
@@ -296,6 +301,8 @@ where
             }),
             settings: self.settings,
             window: self.window,
+            reloader_settings: self.reloader_settings,
+            lib_name: self.lib_name,
         }
     }
 
@@ -308,6 +315,8 @@ where
             program: hot_program::with_subscription(self.program, f),
             settings: self.settings,
             window: self.window,
+            reloader_settings: self.reloader_settings,
+            lib_name: self.lib_name,
         }
     }
 
@@ -320,6 +329,8 @@ where
             program: hot_program::with_theme(self.program, move |state, _window| f.theme(state)),
             settings: self.settings,
             window: self.window,
+            reloader_settings: self.reloader_settings,
+            lib_name: self.lib_name,
         }
     }
 
@@ -332,6 +343,8 @@ where
             program: hot_program::with_style(self.program, f),
             settings: self.settings,
             window: self.window,
+            reloader_settings: self.reloader_settings,
+            lib_name: self.lib_name,
         }
     }
 
@@ -344,6 +357,8 @@ where
             program: hot_program::with_scale_factor(self.program, move |state, _window| f(state)),
             settings: self.settings,
             window: self.window,
+            reloader_settings: self.reloader_settings,
+            lib_name: self.lib_name,
         }
     }
 
@@ -358,6 +373,8 @@ where
             program: hot_program::with_executor::<P, E>(self.program),
             settings: self.settings,
             window: self.window,
+            reloader_settings: self.reloader_settings,
+            lib_name: self.lib_name,
         }
     }
 }
@@ -388,69 +405,69 @@ where
     }
 }
 
-pub fn initiate_lib_reloaders(
-    hot_view: &impl HotFn,
-    hot_update: &impl HotFn,
-    dylib_path: &'static str,
-) {
-    let mut lib_reloaders = HashMap::new();
-    register_hot_lib(&mut lib_reloaders, hot_view, dylib_path);
-    register_hot_lib(&mut lib_reloaders, hot_update, dylib_path);
+// pub fn initiate_lib_reloaders(
+//     hot_view: &impl HotFn,
+//     hot_update: &impl HotFn,
+//     dylib_path: &'static str,
+// ) {
+//     let mut lib_reloaders = HashMap::new();
+//     register_hot_lib(&mut lib_reloaders, hot_view, dylib_path);
+//     register_hot_lib(&mut lib_reloaders, hot_update, dylib_path);
 
-    LIB_RELOADER.set(lib_reloaders).ok();
-}
+//     LIB_RELOADER.set(lib_reloaders).ok();
+// }
 
-pub fn register_hot_lib(
-    lib_reloaders: &mut HashMap<&'static str, Arc<Mutex<LibReloader>>>,
-    f: &impl HotFn,
-    dylib_path: &'static str,
-) {
-    lib_reloaders.entry(f.library_name()).or_insert_with(|| {
-        let (_, update_ch_rx) = UPDATE_CHANNEL
-            .get_or_init(|| crossfire::mpmc::bounded_tx_async_rx_blocking(1))
-            .clone();
-        let (subscription_ch_tx, _) = SUBSCRIPTION_CHANNEL
-            .get_or_init(|| crossfire::mpmc::bounded_tx_blocking_rx_async(1))
-            .clone();
+// pub fn register_hot_lib(
+//     lib_reloaders: &mut HashMap<&'static str, Arc<Mutex<LibReloader>>>,
+//     f: &impl HotFn,
+//     dylib_path: &'static str,
+// ) {
+//     lib_reloaders.entry(f.library_name()).or_insert_with(|| {
+//         let (_, update_ch_rx) = UPDATE_CHANNEL
+//             .get_or_init(|| crossfire::mpmc::bounded_tx_async_rx_blocking(1))
+//             .clone();
+//         let (subscription_ch_tx, _) = SUBSCRIPTION_CHANNEL
+//             .get_or_init(|| crossfire::mpmc::bounded_tx_blocking_rx_async(1))
+//             .clone();
 
-        let mut lib_reloader = LibReloader::new(
-            dylib_path,
-            f.library_name(),
-            Some(Duration::from_millis(25)),
-            None,
-        )
-        .expect("Unable to create LibReloader");
+//         let mut lib_reloader = LibReloader::new(
+//             dylib_path,
+//             f.library_name(),
+//             Some(Duration::from_millis(100)),
+//             None,
+//         )
+//         .expect("Unable to create LibReloader");
 
-        let change_subscriber = lib_reloader.subscribe_to_file_changes();
-        let lib_reloader = Arc::new(Mutex::new(lib_reloader));
-        let lib = lib_reloader.clone();
+//         let change_subscriber = lib_reloader.subscribe_to_file_changes();
+//         let lib_reloader = Arc::new(Mutex::new(lib_reloader));
+//         let lib = lib_reloader.clone();
 
-        std::thread::spawn(move || {
-            loop {
-                change_subscriber.recv().expect("Sub channel closed");
+//         std::thread::spawn(move || {
+//             loop {
+//                 change_subscriber.recv().expect("Sub channel closed");
 
-                if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
-                    println!("{err}")
-                }
+//                 if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
+//                     println!("{err}")
+//                 }
 
-                update_ch_rx.recv().expect("Update Channel closed");
+//                 update_ch_rx.recv().expect("Update Channel closed");
 
-                loop {
-                    if let Ok(mut lib_reloader) = lib.lock() {
-                        if let Err(err) = lib_reloader.update() {
-                            println!("{err}")
-                        } else {
-                            break;
-                        }
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+//                 loop {
+//                     if let Ok(mut lib_reloader) = lib.lock() {
+//                         if let Err(err) = lib_reloader.update() {
+//                             println!("{err}")
+//                         } else {
+//                             break;
+//                         }
+//                     }
+//                     std::thread::sleep(Duration::from_millis(1));
+//                 }
 
-                subscription_ch_tx
-                    .send(ReloadEvent::ReloadComplete)
-                    .expect("Subscription channel closed");
-            }
-        });
-        lib_reloader
-    });
-}
+//                 subscription_ch_tx
+//                     .send(ReloadEvent::ReloadComplete)
+//                     .expect("Subscription channel closed");
+//             }
+//         });
+//         lib_reloader
+//     });
+// }

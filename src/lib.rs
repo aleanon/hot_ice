@@ -5,7 +5,6 @@ mod boot;
 mod codesign;
 mod error;
 mod hot_application;
-mod hot_fn;
 mod hot_program;
 mod hot_subscription;
 mod hot_theme;

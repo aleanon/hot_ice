@@ -1,6 +1,5 @@
 use std::{
     any::type_name,
-    collections::HashMap,
     marker::PhantomData,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
@@ -9,13 +8,9 @@ use std::{
 use iced_futures::Subscription;
 
 use crate::{
-    error::HotFunctionError,
-    lib_reloader::LibReloader,
-    message::MessageSource,
-    reloader::{FunctionState, LIB_RELOADER},
+    error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
+    reloader::FunctionState,
 };
-
-type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
 
 pub trait IntoHotSubscription<State, Message> {
     fn static_subscription(&self, state: &State) -> Subscription<Message>;
@@ -23,8 +18,7 @@ pub trait IntoHotSubscription<State, Message> {
     fn hot_subscription(
         &self,
         state: &State,
-        reloaders: &Reloaders,
-        lib_name: &str,
+        reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
     ) -> Result<Subscription<Message>, HotFunctionError>;
 }
@@ -42,14 +36,9 @@ where
     fn hot_subscription(
         &self,
         state: &State,
-        reloaders: &Reloaders,
-        lib_name: &str,
+        reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
     ) -> Result<Subscription<Message>, HotFunctionError> {
-        let reloader = reloaders
-            .get(lib_name)
-            .ok_or(HotFunctionError::LibraryNotFound)?;
-
         let lib = reloader
             .try_lock()
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;
@@ -70,7 +59,6 @@ where
 }
 
 pub struct HotSubscription<F, State, Message> {
-    lib_name: &'static str,
     function_name: &'static str,
     function: F,
     _state: PhantomData<State>,
@@ -84,14 +72,12 @@ where
 {
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
-        let mut iterator = type_name.split("::");
-        let lib_name = iterator.next().unwrap();
+        let iterator = type_name.split("::");
         let function_name = iterator.last().unwrap();
 
         Self {
             function,
             function_name,
-            lib_name,
             _state: PhantomData,
             _message: PhantomData,
         }
@@ -101,8 +87,9 @@ where
         &self,
         state: &State,
         fn_state: &mut FunctionState,
+        reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Subscription<MessageSource<Message>> {
-        let Some(reloaders) = LIB_RELOADER.get() else {
+        let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self
                 .function
@@ -112,7 +99,7 @@ where
 
         match self
             .function
-            .hot_subscription(state, reloaders, self.lib_name, self.function_name)
+            .hot_subscription(state, reloader, self.function_name)
         {
             Ok(task) => {
                 *fn_state = FunctionState::Hot;

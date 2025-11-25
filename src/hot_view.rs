@@ -1,6 +1,5 @@
 use std::{
     any::type_name,
-    collections::HashMap,
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
@@ -8,14 +7,9 @@ use std::{
 use iced_core::Element;
 
 use crate::{
-    error::HotFunctionError,
-    hot_fn::HotFn,
-    lib_reloader::LibReloader,
-    message::MessageSource,
-    reloader::{FunctionState, LIB_RELOADER},
+    error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
+    reloader::FunctionState,
 };
-
-type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
 
 pub trait IntoHotView<'a, State, Message, Theme, Renderer> {
     fn static_view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer>;
@@ -23,8 +17,7 @@ pub trait IntoHotView<'a, State, Message, Theme, Renderer> {
     fn hot_view(
         &self,
         state: &'a State,
-        reloaders: &Reloaders,
-        lib_name: &str,
+        reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
     ) -> Result<Element<'a, Message, Theme, Renderer>, HotFunctionError>;
 }
@@ -43,14 +36,9 @@ where
     fn hot_view(
         &self,
         state: &'a State,
-        reloaders: &Reloaders,
-        lib_name: &str,
+        reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
     ) -> Result<Element<'a, Message, Theme, Renderer>, HotFunctionError> {
-        let reloader = reloaders
-            .get(lib_name)
-            .ok_or(HotFunctionError::LibraryNotFound)?;
-
         let lib = reloader
             .try_lock()
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;
@@ -101,16 +89,14 @@ where
         &self,
         state: &'a State,
         fn_state: &mut FunctionState,
+        reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Element<'a, MessageSource<Message>, Theme, Renderer> {
-        let Some(reloaders) = LIB_RELOADER.get() else {
+        let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self.function.static_view(state).map(MessageSource::Static);
         };
 
-        match self
-            .function
-            .hot_view(state, reloaders, self.lib_name, self.function_name)
-        {
+        match self.function.hot_view(state, reloader, self.function_name) {
             Ok(element) => {
                 *fn_state = FunctionState::Hot;
                 element.map(MessageSource::Dynamic)
@@ -120,14 +106,5 @@ where
                 self.function.static_view(state).map(MessageSource::Static)
             }
         }
-    }
-}
-
-impl<F, State, Message, Theme, Renderer> HotFn for HotView<F, State, Message, Theme, Renderer>
-where
-    F: for<'a> IntoHotView<'a, State, Message, Theme, Renderer>,
-{
-    fn library_name(&self) -> &'static str {
-        self.lib_name
     }
 }

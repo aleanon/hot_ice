@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::Mutex;
+
 use iced_core::Element;
 use iced_core::Font;
 use iced_core::Settings;
@@ -12,6 +15,7 @@ use iced_winit::runtime::Task;
 use crate::DynMessage;
 use crate::hot_subscription::HotSubscription;
 use crate::hot_subscription::IntoHotSubscription;
+use crate::lib_reloader::LibReloader;
 use crate::message::MessageSource;
 use crate::reloader::FunctionState;
 
@@ -46,6 +50,7 @@ pub trait HotProgram {
         state: &mut Self::State,
         message: MessageSource<Self::Message>,
         fn_state: &mut FunctionState,
+        reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Task<MessageSource<Self::Message>>;
 
     fn view<'a>(
@@ -53,6 +58,7 @@ pub trait HotProgram {
         state: &'a Self::State,
         window: window::Id,
         fn_state: &mut FunctionState,
+        reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
     where
         Self::Theme: 'a,
@@ -91,6 +97,7 @@ pub trait HotProgram {
         &self,
         _state: &Self::State,
         _fn_state: &mut FunctionState,
+        _reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Subscription<MessageSource<Self::Message>> {
         Subscription::none()
     }
@@ -109,10 +116,6 @@ pub trait HotProgram {
 
     fn scale_factor(&self, _state: &Self::State, _window: window::Id) -> f32 {
         1.0
-    }
-
-    fn library_name(&self) -> Option<&str> {
-        None
     }
 }
 
@@ -160,8 +163,9 @@ pub fn with_title<P: HotProgram>(
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message, fn_state)
+            self.program.update(state, message, fn_state, reloader)
         }
 
         fn view<'a>(
@@ -169,12 +173,13 @@ pub fn with_title<P: HotProgram>(
             state: &'a Self::State,
             window: window::Id,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window, fn_state)
+            self.program.view(state, window, fn_state, reloader)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
@@ -193,8 +198,9 @@ pub fn with_title<P: HotProgram>(
             &self,
             state: &Self::State,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state, fn_state)
+            self.program.subscription(state, fn_state, reloader)
         }
 
         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
@@ -238,8 +244,9 @@ pub fn with_subscription<P: HotProgram>(
             &self,
             state: &Self::State,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Subscription<MessageSource<Self::Message>> {
-            self.subscription.subscription(state, fn_state)
+            self.subscription.subscription(state, fn_state, reloader)
         }
 
         fn name() -> &'static str {
@@ -255,8 +262,9 @@ pub fn with_subscription<P: HotProgram>(
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message, fn_state)
+            self.program.update(state, message, fn_state, reloader)
         }
 
         fn view<'a>(
@@ -264,12 +272,13 @@ pub fn with_subscription<P: HotProgram>(
             state: &'a Self::State,
             window: window::Id,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window, fn_state)
+            self.program.view(state, window, fn_state, reloader)
         }
 
         fn settings(&self) -> Settings {
@@ -344,8 +353,9 @@ pub fn with_theme<P: HotProgram>(
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message, fn_state)
+            self.program.update(state, message, fn_state, reloader)
         }
 
         fn view<'a>(
@@ -353,12 +363,13 @@ pub fn with_theme<P: HotProgram>(
             state: &'a Self::State,
             window: window::Id,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window, fn_state)
+            self.program.view(state, window, fn_state, reloader)
         }
 
         fn settings(&self) -> Settings {
@@ -373,8 +384,9 @@ pub fn with_theme<P: HotProgram>(
             &self,
             state: &Self::State,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state, fn_state)
+            self.program.subscription(state, fn_state, reloader)
         }
 
         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
@@ -430,8 +442,9 @@ pub fn with_style<P: HotProgram>(
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message, fn_state)
+            self.program.update(state, message, fn_state, reloader)
         }
 
         fn view<'a>(
@@ -439,12 +452,13 @@ pub fn with_style<P: HotProgram>(
             state: &'a Self::State,
             window: window::Id,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window, fn_state)
+            self.program.view(state, window, fn_state, reloader)
         }
 
         fn settings(&self) -> Settings {
@@ -459,8 +473,9 @@ pub fn with_style<P: HotProgram>(
             &self,
             state: &Self::State,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state, fn_state)
+            self.program.subscription(state, fn_state, reloader)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
@@ -512,8 +527,9 @@ pub fn with_scale_factor<P: HotProgram>(
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message, fn_state)
+            self.program.update(state, message, fn_state, reloader)
         }
 
         fn view<'a>(
@@ -521,12 +537,13 @@ pub fn with_scale_factor<P: HotProgram>(
             state: &'a Self::State,
             window: window::Id,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window, fn_state)
+            self.program.view(state, window, fn_state, reloader)
         }
 
         fn settings(&self) -> Settings {
@@ -541,8 +558,9 @@ pub fn with_scale_factor<P: HotProgram>(
             &self,
             state: &Self::State,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state, fn_state)
+            self.program.subscription(state, fn_state, reloader)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
@@ -602,8 +620,9 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message, fn_state)
+            self.program.update(state, message, fn_state, reloader)
         }
 
         fn view<'a>(
@@ -611,12 +630,13 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             state: &'a Self::State,
             window: window::Id,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window, fn_state)
+            self.program.view(state, window, fn_state, reloader)
         }
 
         fn settings(&self) -> Settings {
@@ -631,8 +651,9 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             &self,
             state: &Self::State,
             fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state, fn_state)
+            self.program.subscription(state, fn_state, reloader)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {

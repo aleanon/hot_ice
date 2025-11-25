@@ -1,6 +1,5 @@
 use std::{
     any::type_name,
-    collections::HashMap,
     marker::PhantomData,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
@@ -9,12 +8,8 @@ use std::{
 use iced_winit::runtime::Task;
 
 use crate::{
-    DynMessage,
-    error::HotFunctionError,
-    hot_fn::HotFn,
-    lib_reloader::LibReloader,
-    message::MessageSource,
-    reloader::{FunctionState, LIB_RELOADER},
+    DynMessage, error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
+    reloader::FunctionState,
 };
 
 trait IntoResult<Message> {
@@ -33,8 +28,6 @@ impl<Message> IntoResult<Message> for Result<Task<Message>, HotFunctionError> {
     }
 }
 
-type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
-
 pub trait IntoHotUpdate<State, Message> {
     fn static_update(
         &self,
@@ -46,8 +39,7 @@ pub trait IntoHotUpdate<State, Message> {
         &self,
         state: &mut State,
         message: Message,
-        reloaders: &Reloaders,
-        lib_name: &str,
+        reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
     ) -> Result<Task<Message>, HotFunctionError>;
 }
@@ -71,14 +63,9 @@ where
         &self,
         state: &mut State,
         message: Message,
-        reloaders: &Reloaders,
-        lib_name: &str,
+        reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
     ) -> Result<Task<Message>, HotFunctionError> {
-        let reloader = reloaders
-            .get(lib_name)
-            .ok_or(HotFunctionError::LibraryNotFound)?;
-
         let lib = reloader
             .try_lock()
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;
@@ -155,23 +142,21 @@ where
         state: &'a mut State,
         message: MessageSource<Message>,
         fn_state: &mut FunctionState,
+        reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Task<MessageSource<Message>> {
         match message {
             MessageSource::Static(message) => {
                 self.run_static(state, message, fn_state, FunctionState::Static)
             }
             MessageSource::Dynamic(message) => {
-                let Some(reloaders) = LIB_RELOADER.get() else {
+                let Some(reloader) = reloader else {
                     return self.run_static(state, message, fn_state, FunctionState::Static);
                 };
 
-                match self.function.hot_update(
-                    state,
-                    message.clone(),
-                    reloaders,
-                    self.lib_name,
-                    self.function_name,
-                ) {
+                match self
+                    .function
+                    .hot_update(state, message.clone(), reloader, self.function_name)
+                {
                     Ok(task) => {
                         *fn_state = FunctionState::Hot;
                         task.map(MessageSource::Dynamic)
@@ -185,14 +170,5 @@ where
                 }
             }
         }
-    }
-}
-
-impl<F, State, Message> HotFn for HotUpdate<F, State, Message>
-where
-    F: IntoHotUpdate<State, Message>,
-{
-    fn library_name(&self) -> &'static str {
-        self.lib_name
     }
 }
