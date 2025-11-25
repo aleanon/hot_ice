@@ -19,7 +19,9 @@ use crate::{
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
     message::MessageSource,
-    reloader::{LIB_RELOADER, Reload, ReloadEvent, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL},
+    reloader::{
+        FunctionState, LIB_RELOADER, Reload, ReloadEvent, SUBSCRIPTION_CHANNEL, UPDATE_CHANNEL,
+    },
 };
 
 pub fn hot_application<State, Message, Theme, Renderer>(
@@ -36,6 +38,11 @@ where
 {
     let hot_view = HotView::new(view);
     let hot_update = HotUpdate::new(update);
+
+    assert_eq!(
+        hot_view.lib_name, hot_update.lib_name,
+        "Application must be defined in a single library crate"
+    );
 
     initiate_lib_reloaders(&hot_view, &hot_update, dylib_path);
 
@@ -77,20 +84,22 @@ where
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
+            fn_state: &mut FunctionState,
         ) -> Task<MessageSource<Self::Message>> {
-            self.update.update(state, message)
+            self.update.update(state, message, fn_state)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             _window: window::Id,
+            fn_state: &mut FunctionState,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Theme: 'a,
             Renderer: 'a,
         {
-            self.view.view(state)
+            self.view.view(state, fn_state)
         }
 
         fn settings(&self) -> Settings {
@@ -99,6 +108,10 @@ where
 
         fn window(&self) -> Option<window::Settings> {
             Some(window::Settings::default())
+        }
+
+        fn library_name(&self) -> Option<&str> {
+            Some(self.view.lib_name)
         }
     }
 
@@ -403,7 +416,7 @@ pub fn register_hot_lib(
         let mut lib_reloader = LibReloader::new(
             dylib_path,
             f.library_name(),
-            Some(Duration::from_millis(10)),
+            Some(Duration::from_millis(25)),
             None,
         )
         .expect("Unable to create LibReloader");

@@ -19,4 +19,6 @@ pub enum HotFunctionError {
     FunctionPaniced(&'static str),
     #[error("Unable to acquire lock on reloader")]
     LockAcquisitionError,
+    #[error("Failed to downcast Message: {0}")]
+    MessageDowncastError(String),
 }

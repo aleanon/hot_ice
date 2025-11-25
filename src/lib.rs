@@ -1,3 +1,5 @@
+#![feature(downcast_unchecked)]
+
 mod boot;
 #[cfg(target_os = "macos")]
 mod codesign;
@@ -16,4 +18,5 @@ mod reloader;
 pub use hot_application::hot_application;
 pub use message::{DynMessage, HotMessage};
 
-pub use hot_ice_macros::{hot_update, hot_view};
+pub use error::HotFunctionError;
+pub use hot_ice_macros::{subscription, update, view};

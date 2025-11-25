@@ -8,8 +8,11 @@ use std::{
 use iced_core::Element;
 
 use crate::{
-    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
-    reloader::LIB_RELOADER,
+    error::HotFunctionError,
+    hot_fn::HotFn,
+    lib_reloader::LibReloader,
+    message::MessageSource,
+    reloader::{FunctionState, LIB_RELOADER},
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
@@ -61,7 +64,7 @@ where
 }
 
 pub struct HotView<F, State, Message, Theme, Renderer> {
-    lib_name: &'static str,
+    pub lib_name: &'static str,
     function_name: &'static str,
     function: F,
     _state: PhantomData<State>,
@@ -94,8 +97,13 @@ where
         }
     }
 
-    pub fn view(&self, state: &'a State) -> Element<'a, MessageSource<Message>, Theme, Renderer> {
+    pub fn view(
+        &self,
+        state: &'a State,
+        fn_state: &mut FunctionState,
+    ) -> Element<'a, MessageSource<Message>, Theme, Renderer> {
         let Some(reloaders) = LIB_RELOADER.get() else {
+            *fn_state = FunctionState::Static;
             return self.function.static_view(state).map(MessageSource::Static);
         };
 
@@ -103,9 +111,12 @@ where
             .function
             .hot_view(state, reloaders, self.lib_name, self.function_name)
         {
-            Ok(element) => element.map(MessageSource::Dynamic),
+            Ok(element) => {
+                *fn_state = FunctionState::Hot;
+                element.map(MessageSource::Dynamic)
+            }
             Err(err) => {
-                eprintln!("{}", err);
+                *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function.static_view(state).map(MessageSource::Static)
             }
         }

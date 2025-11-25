@@ -14,7 +14,7 @@ use syn::{Ident, ItemFn, parse_macro_input};
 ///
 /// And transforms it into:
 /// ```ignore
-/// fn my_update_logic(&self, message: hot_ice::HotMessage) -> hot_ice::runtime::Task<hot_ice::HotMessage> {
+/// fn my_update_logic(&mut self, message: hot_ice::HotMessage) -> hot_ice::runtime::Task<hot_ice::HotMessage> {
 ///     let message = message.into_message().unwrap()
 ///
 ///     Ok(Self::my_update_logic_inner(self, message)
@@ -26,7 +26,7 @@ use syn::{Ident, ItemFn, parse_macro_input};
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn hot_update(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn update(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
@@ -41,13 +41,15 @@ pub fn hot_update(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #vis fn #original_fn_name(
             &mut self,
             message: hot_ice::HotMessage,
-        ) -> Task<hot_ice::HotMessage> {
-            let message = message.into_message().unwrap();
+        ) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
+            let message = message.into_message()
+                .map_err(|message| hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}", message)))?;
 
-            Self::#inner_fn_ident(self, message)
-                .map(hot_ice::DynMessage::into_hot_message)
+            let task = Self::#inner_fn_ident(self, message)
+                .map(hot_ice::DynMessage::into_hot_message);
+
+            Ok(task)
         }
-
         #input
     };
 
@@ -75,7 +77,7 @@ pub fn hot_update(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn hot_view(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn view(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
@@ -88,7 +90,68 @@ pub fn hot_view(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #[unsafe(no_mangle)]
         #vis fn #original_fn_name(&self) -> Element<hot_ice::HotMessage> {
-            Self::#inner_fn_ident(&self)
+            Self::#inner_fn_ident(self)
+                .map(hot_ice::DynMessage::into_hot_message)
+        }
+
+        #input
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Attribute macro that transforms an subscription function to return HotMessage.
+///
+/// **Mark:** If you change the name of your function, you must recompile
+///
+/// Takes a function with signature:
+/// ```ignore
+/// fn my_subscription_logic(&self, message: Message) -> Task<Message>
+/// ```
+///
+/// And transforms it into:
+/// ```ignore
+/// fn my_subscription_logic(&self) -> Subscription<hot_ice::HotMessage> {
+///
+///     Self::my_subscription_logic_inner(self, message)
+///         .map(hot_ice::DynMessage::into_hot_message)
+/// }
+///
+/// fn my_subscription_logic_inner(&self, message: Message) -> Task<Message> {
+///     // Your logic here
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn subscription(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut input = parse_macro_input!(item as ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = Ident::new(&inner_fn_name, Span::call_site());
+    input.sig.ident = inner_fn_ident.clone();
+
+    let vis = &input.vis;
+
+    let is_hot = if attr.is_empty() {
+        true
+    } else {
+        let attr_str = attr.to_string().to_lowercase();
+        match attr_str.as_str() {
+            "not_hot" | "not-hot" => true,
+            _ => false,
+        }
+    };
+
+    let no_mangle_attr = if is_hot {
+        quote! { #[unsafe(no_mangle)] }
+    } else {
+        quote! {}
+    };
+
+    let expanded = quote! {
+        #no_mangle_attr
+        #vis fn #original_fn_name(&self) -> Subscription<hot_ice::HotMessage> {
+            Self::#inner_fn_ident(self)
                 .map(hot_ice::DynMessage::into_hot_message)
         }
 

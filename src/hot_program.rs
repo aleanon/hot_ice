@@ -1,27 +1,26 @@
-//! The definition of an iced program.
-
+use iced_core::Element;
+use iced_core::Font;
+use iced_core::Settings;
 use iced_core::renderer;
 use iced_core::text;
 use iced_core::theme;
 use iced_core::window;
-use iced_core::Element;
-use iced_core::Font;
-use iced_core::Settings;
 use iced_futures::{Executor, Subscription};
 use iced_winit::graphics::compositor;
 use iced_winit::runtime::Task;
 
+use crate::DynMessage;
 use crate::hot_subscription::HotSubscription;
 use crate::hot_subscription::IntoHotSubscription;
 use crate::message::MessageSource;
-use crate::DynMessage;
+use crate::reloader::FunctionState;
 
 /// An interactive, native, cross-platform, multi-windowed application.
 ///
 /// A [`Program`] can execute asynchronous actions by returning a
 /// [`Task`] in some of its methods.
 #[allow(missing_docs)]
-pub trait HotProgram: Sized {
+pub trait HotProgram {
     /// The state of the program.
     type State;
 
@@ -46,12 +45,14 @@ pub trait HotProgram: Sized {
         &self,
         state: &mut Self::State,
         message: MessageSource<Self::Message>,
+        fn_state: &mut FunctionState,
     ) -> Task<MessageSource<Self::Message>>;
 
     fn view<'a>(
         &self,
         state: &'a Self::State,
         window: window::Id,
+        fn_state: &mut FunctionState,
     ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
     where
         Self::Theme: 'a,
@@ -86,7 +87,11 @@ pub trait HotProgram: Sized {
         format!("{title} - Iced")
     }
 
-    fn subscription(&self, _state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
+    fn subscription(
+        &self,
+        _state: &Self::State,
+        _fn_state: &mut FunctionState,
+    ) -> Subscription<MessageSource<Self::Message>> {
         Subscription::none()
     }
 
@@ -104,6 +109,10 @@ pub trait HotProgram: Sized {
 
     fn scale_factor(&self, _state: &Self::State, _window: window::Id) -> f32 {
         1.0
+    }
+
+    fn library_name(&self) -> Option<&str> {
+        None
     }
 }
 
@@ -150,20 +159,22 @@ pub fn with_title<P: HotProgram>(
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
+            fn_state: &mut FunctionState,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message)
+            self.program.update(state, message, fn_state)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             window: window::Id,
+            fn_state: &mut FunctionState,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window)
+            self.program.view(state, window, fn_state)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
@@ -178,8 +189,12 @@ pub fn with_title<P: HotProgram>(
             self.program.window()
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state)
+        fn subscription(
+            &self,
+            state: &Self::State,
+            fn_state: &mut FunctionState,
+        ) -> Subscription<MessageSource<Self::Message>> {
+            self.program.subscription(state, fn_state)
         }
 
         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
@@ -219,8 +234,12 @@ pub fn with_subscription<P: HotProgram>(
         type Renderer = P::Renderer;
         type Executor = P::Executor;
 
-        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
-            self.subscription.subscription(state)
+        fn subscription(
+            &self,
+            state: &Self::State,
+            fn_state: &mut FunctionState,
+        ) -> Subscription<MessageSource<Self::Message>> {
+            self.subscription.subscription(state, fn_state)
         }
 
         fn name() -> &'static str {
@@ -235,20 +254,22 @@ pub fn with_subscription<P: HotProgram>(
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
+            fn_state: &mut FunctionState,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message)
+            self.program.update(state, message, fn_state)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             window: window::Id,
+            fn_state: &mut FunctionState,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window)
+            self.program.view(state, window, fn_state)
         }
 
         fn settings(&self) -> Settings {
@@ -322,20 +343,22 @@ pub fn with_theme<P: HotProgram>(
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
+            fn_state: &mut FunctionState,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message)
+            self.program.update(state, message, fn_state)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             window: window::Id,
+            fn_state: &mut FunctionState,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window)
+            self.program.view(state, window, fn_state)
         }
 
         fn settings(&self) -> Settings {
@@ -346,8 +369,12 @@ pub fn with_theme<P: HotProgram>(
             self.program.window()
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state)
+        fn subscription(
+            &self,
+            state: &Self::State,
+            fn_state: &mut FunctionState,
+        ) -> Subscription<MessageSource<Self::Message>> {
+            self.program.subscription(state, fn_state)
         }
 
         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
@@ -402,20 +429,22 @@ pub fn with_style<P: HotProgram>(
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
+            fn_state: &mut FunctionState,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message)
+            self.program.update(state, message, fn_state)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             window: window::Id,
+            fn_state: &mut FunctionState,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window)
+            self.program.view(state, window, fn_state)
         }
 
         fn settings(&self) -> Settings {
@@ -426,8 +455,12 @@ pub fn with_style<P: HotProgram>(
             self.program.window()
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state)
+        fn subscription(
+            &self,
+            state: &Self::State,
+            fn_state: &mut FunctionState,
+        ) -> Subscription<MessageSource<Self::Message>> {
+            self.program.subscription(state, fn_state)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
@@ -478,20 +511,22 @@ pub fn with_scale_factor<P: HotProgram>(
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
+            fn_state: &mut FunctionState,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message)
+            self.program.update(state, message, fn_state)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             window: window::Id,
+            fn_state: &mut FunctionState,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window)
+            self.program.view(state, window, fn_state)
         }
 
         fn settings(&self) -> Settings {
@@ -502,8 +537,12 @@ pub fn with_scale_factor<P: HotProgram>(
             self.program.window()
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state)
+        fn subscription(
+            &self,
+            state: &Self::State,
+            fn_state: &mut FunctionState,
+        ) -> Subscription<MessageSource<Self::Message>> {
+            self.program.subscription(state, fn_state)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
@@ -562,20 +601,22 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
+            fn_state: &mut FunctionState,
         ) -> Task<MessageSource<Self::Message>> {
-            self.program.update(state, message)
+            self.program.update(state, message, fn_state)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             window: window::Id,
+            fn_state: &mut FunctionState,
         ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
         where
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window)
+            self.program.view(state, window, fn_state)
         }
 
         fn settings(&self) -> Settings {
@@ -586,8 +627,12 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             self.program.window()
         }
 
-        fn subscription(&self, state: &Self::State) -> Subscription<MessageSource<Self::Message>> {
-            self.program.subscription(state)
+        fn subscription(
+            &self,
+            state: &Self::State,
+            fn_state: &mut FunctionState,
+        ) -> Subscription<MessageSource<Self::Message>> {
+            self.program.subscription(state, fn_state)
         }
 
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {

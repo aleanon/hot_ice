@@ -2,15 +2,17 @@ use std::{
     any::type_name,
     collections::HashMap,
     marker::PhantomData,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
 use iced_futures::Subscription;
 
 use crate::{
-    error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
-    reloader::LIB_RELOADER,
+    error::HotFunctionError,
+    lib_reloader::LibReloader,
+    message::MessageSource,
+    reloader::{FunctionState, LIB_RELOADER},
 };
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
@@ -27,13 +29,14 @@ pub trait IntoHotSubscription<State, Message> {
     ) -> Result<Subscription<Message>, HotFunctionError>;
 }
 
-impl<T, State, Message> IntoHotSubscription<State, Message> for T
+impl<T, C, State, Message> IntoHotSubscription<State, Message> for T
 where
-    T: Fn(&State) -> Subscription<Message>,
+    T: Fn(&State) -> C,
+    C: Into<Subscription<Message>>,
     Message: Send + 'static,
 {
     fn static_subscription(&self, state: &State) -> Subscription<Message> {
-        (self)(state)
+        (self)(state).into()
     }
 
     fn hot_subscription(
@@ -52,12 +55,12 @@ where
             .map_err(|_| HotFunctionError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&State) -> Subscription<Message>>(function_name.as_bytes())
+            lib.get_symbol::<fn(&State) -> C>(function_name.as_bytes())
                 .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
         };
 
         match catch_unwind(AssertUnwindSafe(|| function(state))) {
-            Ok(sub) => Ok(sub),
+            Ok(sub) => Ok(sub.into()),
             Err(err) => {
                 std::mem::forget(err);
                 Err(HotFunctionError::FunctionPaniced(function_name))
@@ -94,8 +97,13 @@ where
         }
     }
 
-    pub fn subscription(&self, state: &State) -> Subscription<MessageSource<Message>> {
+    pub fn subscription(
+        &self,
+        state: &State,
+        fn_state: &mut FunctionState,
+    ) -> Subscription<MessageSource<Message>> {
         let Some(reloaders) = LIB_RELOADER.get() else {
+            *fn_state = FunctionState::Static;
             return self
                 .function
                 .static_subscription(state)
@@ -106,9 +114,12 @@ where
             .function
             .hot_subscription(state, reloaders, self.lib_name, self.function_name)
         {
-            Ok(task) => task.map(MessageSource::Dynamic),
-            Err(e) => {
-                eprintln!("{}", e);
+            Ok(task) => {
+                *fn_state = FunctionState::Hot;
+                task.map(MessageSource::Dynamic)
+            }
+            Err(err) => {
+                *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function
                     .static_subscription(state)
                     .map(MessageSource::Static)

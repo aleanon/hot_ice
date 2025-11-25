@@ -2,21 +2,45 @@ use std::{
     any::type_name,
     collections::HashMap,
     marker::PhantomData,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
 use iced_winit::runtime::Task;
 
 use crate::{
-    error::HotFunctionError, hot_fn::HotFn, lib_reloader::LibReloader, message::MessageSource,
-    reloader::LIB_RELOADER, DynMessage,
+    DynMessage,
+    error::HotFunctionError,
+    hot_fn::HotFn,
+    lib_reloader::LibReloader,
+    message::MessageSource,
+    reloader::{FunctionState, LIB_RELOADER},
 };
+
+trait IntoResult<Message> {
+    fn into_result(self) -> Result<Task<Message>, HotFunctionError>;
+}
+
+impl<Message> IntoResult<Message> for Task<Message> {
+    fn into_result(self) -> Result<Task<Message>, HotFunctionError> {
+        Ok(self)
+    }
+}
+
+impl<Message> IntoResult<Message> for Result<Task<Message>, HotFunctionError> {
+    fn into_result(self) -> Result<Task<Message>, HotFunctionError> {
+        self
+    }
+}
 
 type Reloaders = HashMap<&'static str, Arc<Mutex<LibReloader>>>;
 
 pub trait IntoHotUpdate<State, Message> {
-    fn static_update(&self, state: &mut State, message: Message) -> Task<Message>;
+    fn static_update(
+        &self,
+        state: &mut State,
+        message: Message,
+    ) -> Result<Task<Message>, HotFunctionError>;
 
     fn hot_update(
         &self,
@@ -31,12 +55,16 @@ pub trait IntoHotUpdate<State, Message> {
 impl<T, C, State, Message> IntoHotUpdate<State, Message> for T
 where
     T: Fn(&mut State, Message) -> C,
-    C: Into<Task<Message>> + 'static,
+    C: IntoResult<Message>,
     Message: Send + 'static,
     State: Send + 'static,
 {
-    fn static_update(&self, state: &mut State, message: Message) -> Task<Message> {
-        (self)(state, message).into()
+    fn static_update(
+        &self,
+        state: &mut State,
+        message: Message,
+    ) -> Result<Task<Message>, HotFunctionError> {
+        (self)(state, message).into_result()
     }
 
     fn hot_update(
@@ -61,7 +89,7 @@ where
         };
 
         match catch_unwind(AssertUnwindSafe(|| function(state, message))) {
-            Ok(sub) => Ok(sub.into()),
+            Ok(sub) => sub.into_result(),
             Err(err) => {
                 std::mem::forget(err);
                 Err(HotFunctionError::FunctionPaniced(function_name))
@@ -71,7 +99,7 @@ where
 }
 
 pub struct HotUpdate<F, State, Message> {
-    lib_name: &'static str,
+    pub lib_name: &'static str,
     function_name: &'static str,
     function: F,
     _state: PhantomData<State>,
@@ -98,22 +126,43 @@ where
         }
     }
 
+    fn run_static(
+        &self,
+        state: &mut State,
+        message: Message,
+        fn_state: &mut FunctionState,
+        new_fn_state: FunctionState,
+    ) -> Task<MessageSource<Message>> {
+        let result = self
+            .function
+            .static_update(state, message)
+            .map(|t| t.map(MessageSource::Static));
+
+        match result {
+            Ok(task) => {
+                *fn_state = new_fn_state;
+                task
+            }
+            Err(err) => {
+                *fn_state = FunctionState::Error(err.to_string());
+                Task::none()
+            }
+        }
+    }
+
     pub fn update<'a>(
         &self,
         state: &'a mut State,
         message: MessageSource<Message>,
+        fn_state: &mut FunctionState,
     ) -> Task<MessageSource<Message>> {
         match message {
-            MessageSource::Static(message) => self
-                .function
-                .static_update(state, message)
-                .map(MessageSource::Static),
+            MessageSource::Static(message) => {
+                self.run_static(state, message, fn_state, FunctionState::Static)
+            }
             MessageSource::Dynamic(message) => {
                 let Some(reloaders) = LIB_RELOADER.get() else {
-                    return self
-                        .function
-                        .static_update(state, message)
-                        .map(MessageSource::Static);
+                    return self.run_static(state, message, fn_state, FunctionState::Static);
                 };
 
                 match self.function.hot_update(
@@ -123,13 +172,16 @@ where
                     self.lib_name,
                     self.function_name,
                 ) {
-                    Ok(task) => task.map(MessageSource::Dynamic),
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        self.function
-                            .static_update(state, message)
-                            .map(MessageSource::Static)
+                    Ok(task) => {
+                        *fn_state = FunctionState::Hot;
+                        task.map(MessageSource::Dynamic)
                     }
+                    Err(err) => self.run_static(
+                        state,
+                        message,
+                        fn_state,
+                        FunctionState::FallBackStatic(err.to_string()),
+                    ),
                 }
             }
         }
