@@ -26,3 +26,4 @@ iced_futures = { git = "https://github.com/iced-rs/iced.git", branch = "master" 
 iced_widget = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
 iced_devtools = { git = "https://github.com/iced-rs/iced.git", branch = "master", optional = true }
 iced_debug = { git = "https://github.com/iced-rs/iced.git", branch = "master", optional = true }
+cargo_metadata = "0.23.1"

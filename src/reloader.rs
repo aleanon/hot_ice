@@ -1,14 +1,14 @@
 use std::{
-    collections::HashMap,
-    error::Error,
     fmt::Debug,
     io::{BufRead, BufReader},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use crossfire::{MAsyncRx, MAsyncTx, MRx, MTx, mpmc};
+use cargo_metadata::{MetadataCommand, camino::Utf8PathBuf};
+use crossfire::{AsyncRx, MAsyncRx, MTx, mpmc};
 use iced_core::{
     Background, Color, Element, Length, Padding, Settings, Theme,
     theme::{self, Base, Mode},
@@ -18,33 +18,43 @@ use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{
     Container, Text, column, container::Style as ContainerStyle, row, sensor, text::Style, themer,
 };
-use iced_winit::{program::Program, runtime::Task};
+use iced_winit::{
+    graphics::text::cosmic_text::skrifa::raw::tables::meta, program::Program, runtime::Task,
+};
+use thiserror::Error;
 
 use crate::{hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource};
 
-// pub static SUBSCRIPTION_CHANNEL: OnceCell<(MTx<ReloadEvent>, MAsyncRx<ReloadEvent>)> =
-//     OnceCell::new();
-
-// pub static UPDATE_CHANNEL: OnceCell<(MAsyncTx<ReadyToReload>, MRx<ReadyToReload>)> =
-//     OnceCell::new();
-
-// pub static LIB_RELOADER: OnceCell<HashMap<&'static str, Arc<Mutex<LibReloader>>>> = OnceCell::new();
-
-const DEFAULT_LIB_PATH: &str = "target/reload/debug";
+const DEFAULT_TARGET_DIR: &str = "target/reload";
+const PROFILE: &str = "debug";
 
 #[derive(Clone)]
 pub struct ReloaderSettings {
-    pub lib_path: String,
+    /// The target directory for the build command, default: target/reload
+    pub target_dir: String,
+    /// The directory where the compiled dynamic library is located, default: target/reload/debug
+    pub lib_dir: String,
     /// Default is true, if this is set to false, you need to initiate the cargo watch command youself
     /// and make the lib accessible in the supplied `lib_path`
     pub compile_in_reloader: bool,
+    /// The time between each check for a new dynamic library file, default is 25ms
+    pub file_watch_debounce: Duration,
+    /// The directory to watch for changes before recompiling, None means it will watch
+    /// the UI crate root, default: None
+    pub watch_dir: Option<PathBuf>,
 }
 
 impl Default for ReloaderSettings {
     fn default() -> Self {
+        let target_dir = PathBuf::from(DEFAULT_TARGET_DIR);
+        let mut lib_path = target_dir.clone();
+        lib_path.push(PROFILE);
         Self {
-            lib_path: String::from(DEFAULT_LIB_PATH),
+            target_dir: String::from(target_dir.to_str().expect("invalid utf8 in path")),
+            lib_dir: String::from(lib_path.to_str().expect("invalid utf8 in path")),
             compile_in_reloader: true,
+            file_watch_debounce: Duration::from_millis(25),
+            watch_dir: None,
         }
     }
 }
@@ -138,9 +148,11 @@ where
     P: HotProgram,
 {
     None,
+    CompilationComplete,
     AboutToReload,
     ReloadComplete,
     SendReadySignal,
+    Error(ReloaderError),
     AppMessage(MessageSource<P::Message>),
 }
 
@@ -155,6 +167,8 @@ where
             Self::SendReadySignal => Self::SendReadySignal,
             Self::AboutToReload => Self::AboutToReload,
             Self::ReloadComplete => Self::ReloadComplete,
+            Self::CompilationComplete => Self::CompilationComplete,
+            Self::Error(error) => Self::Error(error.clone()),
             Self::None => Self::None,
         }
     }
@@ -167,15 +181,11 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::SendReadySignal => write!(f, "SendReadySignal"),
             Self::AboutToReload => write!(f, "AboutToReload"),
             Self::ReloadComplete => write!(f, "ReloadComplete"),
+            Self::CompilationComplete => write!(f, "CompilationComplete"),
+            Self::Error(error) => write!(f, "{}", error),
             Self::None => write!(f, "None"),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ReloadEvent {
-    AboutToReload,
-    ReloadComplete,
 }
 
 pub struct ReadyToReload;
@@ -190,13 +200,21 @@ pub enum FunctionState {
 
 #[derive(Debug, PartialEq)]
 enum ReloaderState {
-    // Initial(u16, u16),
+    Compiling,
     Ready,
     Reloading(u16),
+    Error(ReloaderError),
 }
 
-type UpdateChannel = (MAsyncTx<ReadyToReload>, MRx<ReadyToReload>);
-type SubscriptionChannel = (MTx<ReloadEvent>, MAsyncRx<ReloadEvent>);
+#[derive(Debug, Clone, Error, PartialEq)]
+pub enum ReloaderError {
+    #[error("Failed to build command {0}")]
+    FailedToBuildCommand(String),
+    #[error("Compilation error: {0}")]
+    CompilationError(String),
+}
+
+type UpdateChannel = (MTx<ReadyToReload>, MAsyncRx<ReadyToReload>);
 
 pub struct Reloader<P: HotProgram + 'static> {
     state: P::State,
@@ -208,7 +226,6 @@ pub struct Reloader<P: HotProgram + 'static> {
     update_fn_state: FunctionState,
     subscription_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
-    subscription_channel: SubscriptionChannel,
 }
 
 impl<'a, P> Reloader<P>
@@ -222,35 +239,24 @@ where
         lib_name: &'static str,
     ) -> (Self, Task<Message<P>>) {
         let (state, program_task) = program.boot();
-        let mut reloader = Self {
+        let reloader = Self {
             state,
-            reloader_state: ReloaderState::Ready,
+            reloader_state: ReloaderState::Compiling,
             lib_reloader: None,
             reloader_settings: reloader_settings.clone(),
             lib_name,
             sensor_key: 0,
             update_fn_state: FunctionState::Static,
             subscription_fn_state: Mutex::new(FunctionState::Static),
-            update_channel: mpmc::bounded_tx_async_rx_blocking(1),
-            subscription_channel: mpmc::bounded_tx_blocking_rx_async(1),
+            update_channel: mpmc::bounded_tx_blocking_rx_async(1),
         };
 
-        reloader.lib_reloader = Some(Self::initiate_reloader(
-            &reloader.reloader_settings.lib_path,
+        let task = Task::stream(Self::build_library(
             reloader.lib_name,
-            reloader.update_channel.1.clone(),
-            reloader.subscription_channel.0.clone(),
+            reloader_settings.target_dir.clone(),
         ));
 
-        // let compilation_task = Task::stream(Self::listen_for_compilation());
-        let lib_change_task = Task::stream(Self::listen_for_lib_change(
-            reloader.subscription_channel.1.clone(),
-        ));
-
-        (
-            reloader,
-            lib_change_task.chain(program_task.map(Message::AppMessage)),
-        )
+        (reloader, task.chain(program_task.map(Message::AppMessage)))
     }
 
     pub fn update(&mut self, program: &P, message: Message<P>) -> Task<Message<P>> {
@@ -269,6 +275,64 @@ where
                     )
                     .map(Message::AppMessage)
             }
+            Message::CompilationComplete => {
+                let mut lib_reloader = LibReloader::new(
+                    &self.reloader_settings.lib_dir,
+                    self.lib_name,
+                    Some(self.reloader_settings.file_watch_debounce),
+                    None,
+                )
+                .expect("Unable to create LibReloader");
+
+                let change_subscriber = lib_reloader.subscribe_to_file_changes();
+                let lib_reloader = Arc::new(Mutex::new(lib_reloader));
+                self.lib_reloader = Some(lib_reloader.clone());
+
+                self.reloader_state = ReloaderState::Ready;
+                let listen_for_lib_changes = Task::stream(Self::listen_for_lib_changes(
+                    lib_reloader,
+                    self.update_channel.1.clone(),
+                    change_subscriber,
+                ));
+
+                let watch_dir = self
+                    .reloader_settings
+                    .watch_dir
+                    .clone()
+                    .and_then(|p| Utf8PathBuf::from_path_buf(p).ok());
+
+                let watch_dir = match watch_dir {
+                    Some(dir) => dir,
+                    None => {
+                        let metadata = MetadataCommand::new()
+                            .exec()
+                            .expect("Failed to get cargo metadata");
+
+                        let package = metadata
+                            .packages
+                            .iter()
+                            .find(|p| p.name == self.lib_name)
+                            .expect("Found no crate matching the lib name");
+
+                        let mut manifest_path = package.manifest_path.clone();
+                        manifest_path.pop();
+                        manifest_path
+                    }
+                };
+
+                log::info!("Directory to watch: {:?}", watch_dir);
+
+                let watch = Task::stream(Self::watch_library(
+                    watch_dir,
+                    self.lib_name,
+                    self.reloader_settings.target_dir.clone(),
+                ));
+                Task::batch([listen_for_lib_changes, watch])
+            }
+            Message::Error(error) => {
+                self.reloader_state = ReloaderState::Error(error);
+                Task::none()
+            }
             Message::AboutToReload => {
                 match self.reloader_state {
                     ReloaderState::Reloading(num) => {
@@ -280,8 +344,11 @@ where
                 Task::none()
             }
             Message::SendReadySignal => {
-                let sender = self.update_channel.0.clone();
-                Task::future(async move { sender.send(ReadyToReload).await }).discard()
+                self.update_channel
+                    .0
+                    .send(ReadyToReload)
+                    .expect("Update Channel closed");
+                Task::none()
             }
             Message::ReloadComplete => {
                 match &self.reloader_state {
@@ -301,7 +368,7 @@ where
                 }
                 Task::none()
             }
-            Message::None => Task::none(),
+            Message::None => panic!(),
         }
     }
 
@@ -325,25 +392,40 @@ where
         };
 
         let mut view_fn_state = FunctionState::Static;
-        let program_view = if self.reloader_state == ReloaderState::Ready {
-            program
+        let program_view = match &self.reloader_state {
+            ReloaderState::Ready => program
                 .view(
                     &self.state,
                     window,
                     &mut view_fn_state,
                     self.lib_reloader.as_ref(),
                 )
-                .map(Message::AppMessage)
-        } else {
-            let content = Container::new(
-                sensor(Text::new("Reloading...").size(20))
-                    .key(self.sensor_key)
-                    .on_show(|_| Message::SendReadySignal),
-            )
-            .center_x(Length::Fill)
-            .center_y(Length::Fill);
+                .map(Message::AppMessage),
+            ReloaderState::Reloading(_) => {
+                let content = Container::new(
+                    sensor(Text::new("Reloading...").size(20))
+                        .key(self.sensor_key)
+                        .on_show(|_| Message::SendReadySignal),
+                )
+                .center_x(Length::Fill)
+                .center_y(Length::Fill);
 
-            with_theme(content.into())
+                with_theme(content.into())
+            }
+            ReloaderState::Error(error) => {
+                let content = Container::new(Text::new(error.to_string()).size(20))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill);
+
+                with_theme(content.into())
+            }
+            ReloaderState::Compiling => {
+                let content = Container::new(Text::new("Compiling...").size(20))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill);
+
+                with_theme(content.into())
+            }
         };
 
         let function_state_widgets = |(r, g, b, a), fn_name, error| {
@@ -440,120 +522,156 @@ where
         program.scale_factor(&self.state, window)
     }
 
-    fn listen_for_lib_change(rx: MAsyncRx<ReloadEvent>) -> impl Stream<Item = Message<P>> {
-        // let rx = SUBSCRIPTION_CHANNEL.get().unwrap().1.clone();
-        stream::channel(10, async move |mut output| {
-            loop {
-                match rx.recv().await {
-                    Ok(message) => match message {
-                        ReloadEvent::AboutToReload => {
-                            if let Err(err) = output.try_send(Message::AboutToReload) {
-                                println!("Failed to send reloading message: {err}")
-                            }
-                        }
-                        ReloadEvent::ReloadComplete => {
-                            if let Err(err) = output.try_send(Message::ReloadComplete) {
-                                println!("Failed to send reload complete message: {err}")
-                            }
-                        }
-                    },
-                    Err(err) => {
-                        println!("{err}")
+    fn build_library(
+        lib_crate_name: &'static str,
+        target_dir: String,
+    ) -> impl Stream<Item = Message<P>> {
+        stream::channel(200, async move |mut output| {
+            let metadata = MetadataCommand::new()
+                .exec()
+                .expect("Failed to get cargo metadata");
+
+            let workspace_root = metadata.workspace_root.as_std_path();
+
+            let result = Command::new("cargo")
+                .current_dir(workspace_root)
+                .args(build_args(lib_crate_name))
+                .environment_variables(&target_dir)
+                .stderr(Stdio::piped())
+                .spawn();
+
+            let mut child = match result {
+                Ok(child) => child,
+                Err(err) => {
+                    if let Err(err) = output.try_send(Message::Error(
+                        ReloaderError::FailedToBuildCommand(err.to_string()),
+                    )) {
+                        log::error!("Failed to send Message: {}", err);
                     }
+                    return;
+                }
+            };
+
+            let stderr = child.stderr.take().unwrap();
+            let stderr_reader = BufReader::new(stderr);
+
+            for line in stderr_reader.lines() {
+                match line {
+                    Ok(line) => {
+                        log::info!("{}", line);
+                    }
+                    Err(err) => {
+                        log::error!("Failed to read line from stderr: {}", err);
+                    }
+                };
+            }
+            match child.wait() {
+                Ok(status) => {
+                    let message = if status.success() {
+                        Message::CompilationComplete
+                    } else {
+                        Message::Error(ReloaderError::CompilationError(status.to_string()))
+                    };
+                    if let Err(err) = output.try_send(message) {
+                        log::error!("Failed to send message: {err}");
+                    }
+                }
+                Err(err) => {
+                    log::error!("Failed to wait for child process: {}", err);
                 }
             }
         })
     }
 
-    // fn compile_library(
-    //     lib_dir: &str,
-    //     library_name: &str,
-    //     target_dir: &str,
-    // ) -> Result<(), Box<dyn Error>> {
-    //     let watch_path: &str = library_name;
+    fn watch_library(
+        watch_dir: Utf8PathBuf,
+        lib_crate_name: &'static str,
+        target_dir: String,
+    ) -> impl Stream<Item = Message<P>> {
+        stream::channel(200, async move |mut output| {
+            let metadata = MetadataCommand::new()
+                .exec()
+                .expect("Failed to get cargo metadata");
 
-    //     let child = Command::new("cargo")
-    //             .arg("watch")
-    //             .arg("-w")
-    //             .arg(watch_path)
-    //             .arg("-d")
-    //             .arg("0.01")
-    //             .arg("-x")
-    //             .arg(format!(
-    //                 "rustc --package {} --crate-type cdylib --profile dev -- -C link-arg=-Wl,--whole-archive",
-    //                 library_name
-    //             ))
-    //             .env("CARGO_PROFILE_DEV_OPT_LEVEL", "0")
-    //             .env("CARGO_PROFILE_DEV_CODEGEN_UNITS", "1")
-    //             .env("CARGO_PROFILE_DEV_DEBUG", "false")
-    //             .env("CARGO_PROFILE_DEV_LTO", "false")
-    //             .env("CARGO_TARGET_DIR", target_dir)
-    //             .stdout(Stdio::piped())
-    //             .stderr(Stdio::piped())
-    //             .spawn()?;
+            let workspace_root = metadata.workspace_root;
 
-    //     let stdout = child.stdout.take().unwrap();
-    //     let stderr = child.stderr.take().unwrap();
+            let Ok(watch_dir) = watch_dir.strip_prefix(&workspace_root) else {
+                log::error!("Failed to strip prefix");
+                return;
+            };
 
-    //     stream::channel(10, async move |mut output| {
-    //         let stdout_reader = BufReader::new(stdout);
-    //         for line in stdout_reader.lines() {
-    //             let line = line?;
-    //         }
+            log::info!("workspace_root: {}", workspace_root);
+            log::info!("watch dir relative path: {}", watch_dir);
 
-    //         if status.success() {
-    //             Ok(())
-    //         } else {
-    //             Err(std::io::Error::new(
-    //                 std::io::ErrorKind::Other,
-    //                 format!("cargo watch exited with status: {}", status),
-    //             ))
-    //         }
-    //     });
+            let result = Command::new("cargo")
+                .current_dir(workspace_root)
+                .arg("watch")
+                .arg("-w")
+                .arg(watch_dir)
+                .arg("-d")
+                .arg("0.01")
+                .arg("-x")
+                .arg(build_args(lib_crate_name).join(" "))
+                .environment_variables(&target_dir)
+                .stderr(Stdio::piped())
+                .spawn();
 
-    //     let stdout_reader = BufReader::new(stdout);
-    //     for line in stdout_reader.lines() {
-    //         let line = line?;
-    //     }
+            let mut child = match result {
+                Ok(child) => child,
+                Err(err) => {
+                    if let Err(err) = output.try_send(Message::Error(
+                        ReloaderError::FailedToBuildCommand(err.to_string()),
+                    )) {
+                        log::error!("Failed to send Message: {}", err);
+                    }
+                    return;
+                }
+            };
 
-    //     if status.success() {
-    //         Ok(())
-    //     } else {
-    //         Err(std::io::Error::new(
-    //             std::io::ErrorKind::Other,
-    //             format!("cargo watch exited with status: {}", status),
-    //         ))
-    //     }
-    // }
+            log::info!("cargo watch started successfully");
 
-    fn initiate_reloader(
-        lib_dir: &str,
-        library_name: &str,
-        update_ch_rx: MRx<ReadyToReload>,
-        subscription_ch_tx: MTx<ReloadEvent>,
-    ) -> Arc<Mutex<LibReloader>> {
-        let mut lib_reloader =
-            LibReloader::new(lib_dir, library_name, Some(Duration::from_millis(25)), None)
-                .expect("Unable to create LibReloader");
+            if let Some(stderr) = child.stderr.take() {
+                std::thread::spawn(move || {
+                    let stderr_reader = BufReader::new(stderr);
+                    for line in stderr_reader.lines() {
+                        match line {
+                            Ok(line) => {
+                                log::info!("[cargo watch] {}", line);
+                            }
+                            Err(err) => {
+                                log::error!("Failed to read line from stderr: {}", err);
+                                break;
+                            }
+                        };
+                    }
+                    log::info!("cargo watch stderr reader stopped");
+                });
+            }
+        })
+    }
 
-        let change_subscriber = lib_reloader.subscribe_to_file_changes();
-        let lib_reloader = Arc::new(Mutex::new(lib_reloader));
-        let lib = lib_reloader.clone();
-
-        std::thread::spawn(move || {
+    fn listen_for_lib_changes(
+        lib_reloader: Arc<Mutex<LibReloader>>,
+        update_ch_rx: MAsyncRx<ReadyToReload>,
+        change_subscriber: AsyncRx<()>,
+    ) -> impl Stream<Item = Message<P>> {
+        stream::channel(10, async move |mut output| {
             loop {
-                change_subscriber.recv().expect("Sub channel closed");
+                log::info!("Waiting for lib changes");
+                change_subscriber.recv().await.expect("Sub channel closed");
 
-                if let Err(err) = subscription_ch_tx.send(ReloadEvent::AboutToReload) {
-                    println!("{err}")
+                if let Err(err) = output.try_send(Message::AboutToReload) {
+                    log::error!("Failed to send reloading message: {err}")
                 }
 
-                update_ch_rx.recv().expect("Update Channel closed");
+                update_ch_rx.recv().await.expect("Update Channel closed");
+
+                log::info!("Reloading library");
 
                 loop {
-                    if let Ok(mut lib_reloader) = lib.lock() {
-                        if let Err(err) = lib_reloader.update() {
-                            println!("{err}")
+                    if let Ok(mut reloader) = lib_reloader.lock() {
+                        if let Err(err) = reloader.update() {
+                            log::error!("{err}")
                         } else {
                             break;
                         }
@@ -561,11 +679,42 @@ where
                     std::thread::sleep(Duration::from_millis(1));
                 }
 
-                subscription_ch_tx
-                    .send(ReloadEvent::ReloadComplete)
-                    .expect("Subscription channel closed");
+                log::info!("Reload complete");
+
+                if let Err(err) = output.try_send(Message::ReloadComplete) {
+                    log::error!("Failed to send reload complete message: {err}")
+                }
             }
-        });
-        lib_reloader
+        })
+    }
+}
+
+fn build_args(library_name: &str) -> Vec<&str> {
+    vec![
+        "rustc",
+        "--package",
+        library_name,
+        "--lib",
+        "--crate-type",
+        "cdylib",
+        "--profile",
+        "dev",
+        "--",
+        "-C",
+        "link-arg=-Wl,--whole-archive",
+    ]
+}
+
+trait EnvVariables {
+    fn environment_variables(&mut self, target_dir: &str) -> &mut Self;
+}
+
+impl EnvVariables for Command {
+    fn environment_variables(&mut self, target_dir: &str) -> &mut Self {
+        self.env("CARGO_PROFILE_DEV_OPT_LEVEL", "0")
+            .env("CARGO_PROFILE_DEV_CODEGEN_UNITS", "1")
+            .env("CARGO_PROFILE_DEV_DEBUG", "false")
+            .env("CARGO_PROFILE_DEV_LTO", "false")
+            .env("CARGO_TARGET_DIR", target_dir)
     }
 }

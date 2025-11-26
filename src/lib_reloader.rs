@@ -1,3 +1,4 @@
+use crossfire::{AsyncRx, MTx, mpsc};
 ///This file is copied from the hot-lib-reloader crate
 use libloading::{Library, Symbol};
 use notify::RecursiveMode;
@@ -7,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, Ordering},
-    mpsc,
 };
 use std::thread;
 use std::time::Duration;
@@ -38,7 +38,7 @@ pub struct LibReloader {
     watched_lib_file: PathBuf,
     loaded_lib_file: PathBuf,
     lib_file_hash: Arc<AtomicU32>,
-    file_change_subscribers: Arc<Mutex<Vec<mpsc::Sender<()>>>>,
+    file_change_subscribers: Arc<Mutex<Vec<MTx<()>>>>,
     #[cfg(target_os = "macos")]
     codesigner: super::codesign::CodeSigner,
     loaded_lib_name_template: Option<String>,
@@ -121,9 +121,9 @@ impl LibReloader {
     }
 
     // needs to be public as it is used inside the hot_module macro.
-    pub fn subscribe_to_file_changes(&mut self) -> mpsc::Receiver<()> {
+    pub fn subscribe_to_file_changes(&mut self) -> AsyncRx<()> {
         log::trace!("subscribe to file change");
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::unbounded_async();
         let mut subscribers = self.file_change_subscribers.lock().unwrap();
         subscribers.push(tx);
         rx
@@ -193,7 +193,7 @@ impl LibReloader {
         lib_file: impl AsRef<Path>,
         lib_file_hash: Arc<AtomicU32>,
         changed: Arc<AtomicBool>,
-        file_change_subscribers: Arc<Mutex<Vec<mpsc::Sender<()>>>>,
+        file_change_subscribers: Arc<Mutex<Vec<MTx<()>>>>,
         debounce: Duration,
     ) -> Result<(), HotReloaderError> {
         let lib_file = lib_file.as_ref().to_path_buf();
@@ -203,7 +203,7 @@ impl LibReloader {
         // a pending change still waiting to be loaded, set `self.changed` to true. This
         // then gets picked up by `self.update`.
         thread::spawn(move || {
-            let (tx, rx) = mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::channel();
 
             let mut debouncer =
                 new_debouncer(debounce, None, tx).expect("creating notify debouncer");
