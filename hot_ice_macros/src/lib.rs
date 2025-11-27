@@ -3,6 +3,57 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{Ident, ItemFn, parse_macro_input};
 
+/// Attribute macro that transforms a boot/new function to handle DynMessage conversion.
+///
+/// **Mark:** If you change the name of your function, you must recompile
+///
+/// Takes a function with signature:
+/// ```ignore
+/// fn my_update_logic(&self, message: Message) -> Task<Message>
+/// ```
+///
+/// And transforms it into:
+/// ```ignore
+/// fn my_update_logic(&mut self, message: hot_ice::HotMessage) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
+///     let message = message.into_message()
+///         .map_err(|message|hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}",message)))
+///
+///     let task = self.my_update_logic_inner(self, message)
+///         .map(hot_ice::DynMessage::into_hot_message);
+///
+///     Ok(task)
+/// }
+///
+/// fn my_update_logic_inner(&self, message: Message) -> Task<Message> {
+///     // Your logic here
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn boot(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut input = parse_macro_input!(item as ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = Ident::new(&inner_fn_name, Span::call_site());
+    input.sig.ident = inner_fn_ident.clone();
+
+    let vis = &input.vis;
+
+    let expanded = quote! {
+        #vis fn #original_fn_name() -> (Self, Task<hot_ice::HotMessage>) {
+            use hot_ice::IntoBoot;
+
+            let (app, task) = Self::#inner_fn_ident().into_boot();
+
+            (app, task.map(hot_ice::DynMessage::into_hot_message))
+        }
+
+        #input
+    };
+
+    TokenStream::from(expanded)
+}
+
 /// Attribute macro that transforms an update function to handle DynMessage conversion.
 ///
 /// **Mark:** If you change the name of your function, you must recompile
@@ -14,11 +65,14 @@ use syn::{Ident, ItemFn, parse_macro_input};
 ///
 /// And transforms it into:
 /// ```ignore
-/// fn my_update_logic(&mut self, message: hot_ice::HotMessage) -> hot_ice::runtime::Task<hot_ice::HotMessage> {
-///     let message = message.into_message().unwrap()
+/// fn my_update_logic(&mut self, message: hot_ice::HotMessage) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
+///     let message = message.into_message()
+///         .map_err(|message|hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}",message)))
 ///
-///     Ok(Self::my_update_logic_inner(self, message)
-///         .map(hot_ice::DynMessage::into_hot_message))
+///     let task = self.my_update_logic_inner(self, message)
+///         .map(hot_ice::DynMessage::into_hot_message);
+///
+///     Ok(task)
 /// }
 ///
 /// fn my_update_logic_inner(&self, message: Message) -> Task<Message> {
@@ -45,7 +99,7 @@ pub fn update(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let message = message.into_message()
                 .map_err(|message| hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}", message)))?;
 
-            let task = Self::#inner_fn_ident(self, message)
+            let task = self.#inner_fn_ident(message)
                 .map(hot_ice::DynMessage::into_hot_message);
 
             Ok(task)
@@ -68,7 +122,7 @@ pub fn update(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// And transforms it into:
 /// ```ignore
 /// fn my_view(&self) -> Element<hot_ice::HotMessage> {
-///     Self::my_view_inner(&self)
+///     self.my_view_inner()
 ///         .map(hot_ice::DynMessage::into_hot_message)
 /// }
 ///
@@ -90,7 +144,7 @@ pub fn view(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #[unsafe(no_mangle)]
         #vis fn #original_fn_name(&self) -> Element<hot_ice::HotMessage> {
-            Self::#inner_fn_ident(self)
+            self.#inner_fn_ident()
                 .map(hot_ice::DynMessage::into_hot_message)
         }
 
@@ -137,8 +191,8 @@ pub fn subscription(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         let attr_str = attr.to_string().to_lowercase();
         match attr_str.as_str() {
-            "not_hot" | "not-hot" => true,
-            _ => false,
+            "not_hot" | "not-hot" => false,
+            _ => true,
         }
     };
 
@@ -151,7 +205,7 @@ pub fn subscription(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #no_mangle_attr
         #vis fn #original_fn_name(&self) -> Subscription<hot_ice::HotMessage> {
-            Self::#inner_fn_ident(self)
+            self.#inner_fn_ident()
                 .map(hot_ice::DynMessage::into_hot_message)
         }
 

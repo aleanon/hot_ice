@@ -1,7 +1,7 @@
 use std::{
     fmt::Debug,
     io::{BufRead, BufReader},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
@@ -18,9 +18,7 @@ use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{
     Container, Text, column, container::Style as ContainerStyle, row, sensor, text::Style, themer,
 };
-use iced_winit::{
-    graphics::text::cosmic_text::skrifa::raw::tables::meta, program::Program, runtime::Task,
-};
+use iced_winit::{program::Program, runtime::Task};
 use thiserror::Error;
 
 use crate::{hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource};
