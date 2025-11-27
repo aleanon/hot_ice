@@ -17,5 +17,5 @@ mod reloader;
 pub use boot::IntoBoot;
 pub use error::HotFunctionError;
 pub use hot_application::hot_application;
-pub use hot_ice_macros::{new, subscription, update, view};
+pub use hot_ice_macros::{boot, subscription, update, view};
 pub use message::{DynMessage, HotMessage};
