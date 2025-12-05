@@ -13,10 +13,16 @@ use iced_winit::graphics::compositor;
 use iced_winit::runtime::Task;
 
 use crate::DynMessage;
+use crate::hot_scale_factor::HotScaleFactor;
+use crate::hot_scale_factor::IntoHotScaleFactor;
+use crate::hot_style::HotStyle;
+use crate::hot_style::IntoHotStyle;
 use crate::hot_subscription::HotSubscription;
 use crate::hot_subscription::IntoHotSubscription;
 use crate::hot_theme::HotTheme;
 use crate::hot_theme::IntoHotTheme;
+use crate::hot_title::HotTitle;
+use crate::hot_title::IntoHotTitle;
 use crate::lib_reloader::LibReloader;
 use crate::message::MessageSource;
 use crate::reloader::FunctionState;
@@ -66,7 +72,13 @@ pub trait HotProgram {
         Self::Theme: 'a,
         Self::Renderer: 'a;
 
-    fn title(&self, _state: &Self::State, _window: window::Id) -> String {
+    fn title(
+        &self,
+        _state: &Self::State,
+        _window: window::Id,
+        _fn_state: &mut FunctionState,
+        _reloader: Option<&Arc<Mutex<LibReloader>>>,
+    ) -> String {
         let mut title = String::new();
 
         for (i, part) in Self::name().split("_").enumerate() {
@@ -118,11 +130,23 @@ pub trait HotProgram {
 
     fn window(&self) -> Option<window::Settings>;
 
-    fn style(&self, _state: &Self::State, theme: &Self::Theme) -> theme::Style {
+    fn style(
+        &self,
+        _state: &Self::State,
+        theme: &Self::Theme,
+        _fn_state: &mut FunctionState,
+        _reloader: Option<&Arc<Mutex<LibReloader>>>,
+    ) -> theme::Style {
         theme::Base::base(theme)
     }
 
-    fn scale_factor(&self, _state: &Self::State, _window: window::Id) -> f32 {
+    fn scale_factor(
+        &self,
+        _state: &Self::State,
+        _window: window::Id,
+        _fn_state: &mut FunctionState,
+        _reloader: Option<&Arc<Mutex<LibReloader>>>,
+    ) -> f32 {
         1.0
     }
 }
@@ -130,7 +154,7 @@ pub trait HotProgram {
 /// Decorates a [`Program`] with the given title function.
 pub fn with_title<P: HotProgram>(
     program: P,
-    title: impl Fn(&P::State, window::Id) -> String,
+    f: impl IntoHotTitle<P::State>,
 ) -> impl HotProgram<
     State = P::State,
     Message = P::Message,
@@ -138,15 +162,20 @@ pub fn with_title<P: HotProgram>(
     Renderer = P::Renderer,
     Executor = P::Executor,
 > {
-    struct WithTitle<P, Title> {
-        program: P,
-        title: Title,
-    }
+    let hot_title = HotTitle::new(f);
 
-    impl<P, Title> HotProgram for WithTitle<P, Title>
+    struct WithTitle<P, F>
     where
         P: HotProgram,
-        Title: Fn(&P::State, window::Id) -> String,
+    {
+        program: P,
+        title: HotTitle<F, P::State>,
+    }
+
+    impl<P, F> HotProgram for WithTitle<P, F>
+    where
+        P: HotProgram,
+        F: IntoHotTitle<P::State>,
     {
         type State = P::State;
         type Message = P::Message;
@@ -154,8 +183,14 @@ pub fn with_title<P: HotProgram>(
         type Renderer = P::Renderer;
         type Executor = P::Executor;
 
-        fn title(&self, state: &Self::State, window: window::Id) -> String {
-            (self.title)(state, window)
+        fn title(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> String {
+            self.title.title(state, window, fn_state, reloader)
         }
 
         fn name() -> &'static str {
@@ -217,16 +252,31 @@ pub fn with_title<P: HotProgram>(
             self.program.subscription(state, fn_state, reloader)
         }
 
-        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
-            self.program.style(state, theme)
+        fn style(
+            &self,
+            state: &Self::State,
+            theme: &Self::Theme,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> theme::Style {
+            self.program.style(state, theme, fn_state, reloader)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
-            self.program.scale_factor(state, window)
+        fn scale_factor(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> f32 {
+            self.program.scale_factor(state, window, fn_state, reloader)
         }
     }
 
-    WithTitle { program, title }
+    WithTitle {
+        program,
+        title: hot_title,
+    }
 }
 
 /// Decorates a [`Program`] with the given subscription function.
@@ -303,8 +353,14 @@ pub fn with_subscription<P: HotProgram>(
             self.program.window()
         }
 
-        fn title(&self, state: &Self::State, window: window::Id) -> String {
-            self.program.title(state, window)
+        fn title(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> String {
+            self.program.title(state, window, fn_state, reloader)
         }
 
         fn theme(
@@ -317,12 +373,24 @@ pub fn with_subscription<P: HotProgram>(
             self.program.theme(state, window, fn_state, reloader)
         }
 
-        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
-            self.program.style(state, theme)
+        fn style(
+            &self,
+            state: &Self::State,
+            theme: &Self::Theme,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> theme::Style {
+            self.program.style(state, theme, fn_state, reloader)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
-            self.program.scale_factor(state, window)
+        fn scale_factor(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> f32 {
+            self.program.scale_factor(state, window, fn_state, reloader)
         }
     }
 
@@ -375,8 +443,14 @@ pub fn with_theme<P: HotProgram>(
             self.program.boot()
         }
 
-        fn title(&self, state: &Self::State, window: window::Id) -> String {
-            self.program.title(state, window)
+        fn title(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> String {
+            self.program.title(state, window, fn_state, reloader)
         }
 
         fn update(
@@ -420,12 +494,24 @@ pub fn with_theme<P: HotProgram>(
             self.program.subscription(state, fn_state, reloader)
         }
 
-        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
-            self.program.style(state, theme)
+        fn style(
+            &self,
+            state: &Self::State,
+            theme: &Self::Theme,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> theme::Style {
+            self.program.style(state, theme, fn_state, reloader)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
-            self.program.scale_factor(state, window)
+        fn scale_factor(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> f32 {
+            self.program.scale_factor(state, window, fn_state, reloader)
         }
     }
 
@@ -438,16 +524,21 @@ pub fn with_theme<P: HotProgram>(
 /// Decorates a [`Program`] with the given style function.
 pub fn with_style<P: HotProgram>(
     program: P,
-    f: impl Fn(&P::State, &P::Theme) -> theme::Style,
+    f: impl IntoHotStyle<P::State, P::Theme>,
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
-    struct WithStyle<P, F> {
+    let hot_style = HotStyle::new(f);
+
+    struct WithStyle<P, F>
+    where
+        P: HotProgram,
+    {
         program: P,
-        style: F,
+        style: HotStyle<F, P::State, P::Theme>,
     }
 
     impl<P: HotProgram, F> HotProgram for WithStyle<P, F>
     where
-        F: Fn(&P::State, &P::Theme) -> theme::Style,
+        F: IntoHotStyle<P::State, P::Theme>,
     {
         type State = P::State;
         type Message = P::Message;
@@ -455,8 +546,14 @@ pub fn with_style<P: HotProgram>(
         type Renderer = P::Renderer;
         type Executor = P::Executor;
 
-        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
-            (self.style)(state, theme)
+        fn style(
+            &self,
+            state: &Self::State,
+            theme: &Self::Theme,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> theme::Style {
+            self.style.style(state, theme, fn_state, reloader)
         }
 
         fn name() -> &'static str {
@@ -467,8 +564,14 @@ pub fn with_style<P: HotProgram>(
             self.program.boot()
         }
 
-        fn title(&self, state: &Self::State, window: window::Id) -> String {
-            self.program.title(state, window)
+        fn title(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> String {
+            self.program.title(state, window, fn_state, reloader)
         }
 
         fn update(
@@ -522,27 +625,41 @@ pub fn with_style<P: HotProgram>(
             self.program.theme(state, window, fn_state, reloader)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
-            self.program.scale_factor(state, window)
+        fn scale_factor(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> f32 {
+            self.program.scale_factor(state, window, fn_state, reloader)
         }
     }
 
-    WithStyle { program, style: f }
+    WithStyle {
+        program,
+        style: hot_style,
+    }
 }
 
 /// Decorates a [`Program`] with the given scale factor function.
 pub fn with_scale_factor<P: HotProgram>(
     program: P,
-    f: impl Fn(&P::State, window::Id) -> f32,
+    f: impl IntoHotScaleFactor<P::State>,
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
-    struct WithScaleFactor<P, F> {
+    let hot_scale_factor = HotScaleFactor::new(f);
+
+    struct WithScaleFactor<P, F>
+    where
+        P: HotProgram,
+    {
         program: P,
-        scale_factor: F,
+        scale_factor: HotScaleFactor<F, P::State>,
     }
 
     impl<P: HotProgram, F> HotProgram for WithScaleFactor<P, F>
     where
-        F: Fn(&P::State, window::Id) -> f32,
+        F: IntoHotScaleFactor<P::State>,
     {
         type State = P::State;
         type Message = P::Message;
@@ -550,8 +667,14 @@ pub fn with_scale_factor<P: HotProgram>(
         type Renderer = P::Renderer;
         type Executor = P::Executor;
 
-        fn title(&self, state: &Self::State, window: window::Id) -> String {
-            self.program.title(state, window)
+        fn title(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> String {
+            self.program.title(state, window, fn_state, reloader)
         }
 
         fn name() -> &'static str {
@@ -613,18 +736,31 @@ pub fn with_scale_factor<P: HotProgram>(
             self.program.theme(state, window, fn_state, reloader)
         }
 
-        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
-            self.program.style(state, theme)
+        fn style(
+            &self,
+            state: &Self::State,
+            theme: &Self::Theme,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> theme::Style {
+            self.program.style(state, theme, fn_state, reloader)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
-            (self.scale_factor)(state, window)
+        fn scale_factor(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> f32 {
+            self.scale_factor
+                .scale_factor(state, window, fn_state, reloader)
         }
     }
 
     WithScaleFactor {
         program,
-        scale_factor: f,
+        scale_factor: hot_scale_factor,
     }
 }
 
@@ -649,8 +785,14 @@ pub fn with_executor<P: HotProgram, E: Executor>(
         type Renderer = P::Renderer;
         type Executor = E;
 
-        fn title(&self, state: &Self::State, window: window::Id) -> String {
-            self.program.title(state, window)
+        fn title(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> String {
+            self.program.title(state, window, fn_state, reloader)
         }
 
         fn name() -> &'static str {
@@ -712,12 +854,24 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             self.program.theme(state, window, fn_state, reloader)
         }
 
-        fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
-            self.program.style(state, theme)
+        fn style(
+            &self,
+            state: &Self::State,
+            theme: &Self::Theme,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> theme::Style {
+            self.program.style(state, theme, fn_state, reloader)
         }
 
-        fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
-            self.program.scale_factor(state, window)
+        fn scale_factor(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> f32 {
+            self.program.scale_factor(state, window, fn_state, reloader)
         }
     }
 

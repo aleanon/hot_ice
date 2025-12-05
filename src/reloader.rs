@@ -245,6 +245,9 @@ pub struct Reloader<P: HotProgram + 'static> {
     update_fn_state: FunctionState,
     subscription_fn_state: Mutex<FunctionState>,
     theme_fn_state: Mutex<FunctionState>,
+    style_fn_state: Mutex<FunctionState>,
+    scale_factor_fn_state: Mutex<FunctionState>,
+    title_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
 }
 
@@ -271,6 +274,9 @@ where
             update_fn_state: FunctionState::Static,
             subscription_fn_state: Mutex::new(FunctionState::Static),
             theme_fn_state: Mutex::new(FunctionState::Static),
+            style_fn_state: Mutex::new(FunctionState::Static),
+            scale_factor_fn_state: Mutex::new(FunctionState::Static),
+            title_fn_state: Mutex::new(FunctionState::Static),
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
         };
 
@@ -545,32 +551,59 @@ where
     }
 
     pub fn title(&self, program: &P, window: window::Id) -> String {
-        program.title(&self.state, window)
+        if let Ok(mut title_fn_state) = self.title_fn_state.lock() {
+            if self.reloader_state == ReloaderState::Ready {
+                return program.title(
+                    &self.state,
+                    window,
+                    &mut title_fn_state,
+                    self.lib_reloader.as_ref(),
+                );
+            }
+        };
+        String::from("Hot Ice")
     }
 
     pub fn theme(&self, program: &P, window: window::Id) -> Option<P::Theme> {
         if let Ok(mut theme_fn_state) = self.theme_fn_state.lock() {
             if self.reloader_state == ReloaderState::Ready {
-                program.theme(
+                return program.theme(
                     &self.state,
                     window,
                     &mut theme_fn_state,
                     self.lib_reloader.as_ref(),
-                )
-            } else {
-                None
+                );
             }
-        } else {
-            None
         }
+        None
     }
 
     pub fn style(&self, program: &P, theme: &P::Theme) -> theme::Style {
-        program.style(&self.state, theme)
+        if let Ok(mut style_fn_state) = self.style_fn_state.lock() {
+            if self.reloader_state == ReloaderState::Ready {
+                return program.style(
+                    &self.state,
+                    theme,
+                    &mut style_fn_state,
+                    self.lib_reloader.as_ref(),
+                );
+            }
+        };
+        theme.base()
     }
 
     pub fn scale_factor(&self, program: &P, window: window::Id) -> f32 {
-        program.scale_factor(&self.state, window)
+        if let Ok(mut scale_factor_fn_state) = self.scale_factor_fn_state.lock() {
+            if self.reloader_state == ReloaderState::Ready {
+                return program.scale_factor(
+                    &self.state,
+                    window,
+                    &mut scale_factor_fn_state,
+                    self.lib_reloader.as_ref(),
+                );
+            }
+        };
+        1.0
     }
 
     fn build_library(

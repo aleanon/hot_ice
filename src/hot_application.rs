@@ -10,8 +10,11 @@ use iced_winit::{Error, runtime::Task};
 use crate::{
     DynMessage, boot,
     hot_program::{self, HotProgram},
+    hot_scale_factor::IntoHotScaleFactor,
+    hot_style::IntoHotStyle,
     hot_subscription::IntoHotSubscription,
     hot_theme::IntoHotTheme,
+    hot_title::IntoHotTitle,
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
@@ -293,12 +296,10 @@ where
     /// Sets the [`Title`] of the [`Application`].
     pub fn title(
         self,
-        title: impl Title<P::State>,
+        f: impl IntoHotTitle<P::State>,
     ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: hot_program::with_title(self.program, move |state, _window| {
-                title.title(state)
-            }),
+            program: hot_program::with_title(self.program, f),
             settings: self.settings,
             window: self.window,
             reloader_settings: self.reloader_settings,
@@ -337,7 +338,7 @@ where
     /// Sets the style logic of the [`Application`].
     pub fn style(
         self,
-        f: impl Fn(&P::State, &P::Theme) -> theme::Style,
+        f: impl IntoHotStyle<P::State, P::Theme>,
     ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
             program: hot_program::with_style(self.program, f),
@@ -351,10 +352,10 @@ where
     /// Sets the scale factor of the [`Application`].
     pub fn scale_factor(
         self,
-        f: impl Fn(&P::State) -> f32,
+        f: impl IntoHotScaleFactor<P::State>,
     ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: hot_program::with_scale_factor(self.program, move |state, _window| f(state)),
+            program: hot_program::with_scale_factor(self.program, f),
             settings: self.settings,
             window: self.window,
             reloader_settings: self.reloader_settings,
@@ -376,31 +377,5 @@ where
             reloader_settings: self.reloader_settings,
             lib_name: self.lib_name,
         }
-    }
-}
-
-/// The title logic of some [`Application`].
-///
-/// This trait is implemented both for `&static str` and
-/// any closure `Fn(&State) -> String`.
-///
-/// This trait allows the [`application`] builder to take any of them.
-pub trait Title<State> {
-    /// Produces the title of the [`Application`].
-    fn title(&self, state: &State) -> String;
-}
-
-impl<State> Title<State> for &'static str {
-    fn title(&self, _state: &State) -> String {
-        self.to_string()
-    }
-}
-
-impl<T, State> Title<State> for T
-where
-    T: Fn(&State) -> String,
-{
-    fn title(&self, state: &State) -> String {
-        self(state)
     }
 }
