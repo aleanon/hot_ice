@@ -1,2 +1,3 @@
 /target
 /Cargo.lock
+/hot_ice_macros/target
