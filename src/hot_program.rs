@@ -15,6 +15,8 @@ use iced_winit::runtime::Task;
 use crate::DynMessage;
 use crate::hot_subscription::HotSubscription;
 use crate::hot_subscription::IntoHotSubscription;
+use crate::hot_theme::HotTheme;
+use crate::hot_theme::IntoHotTheme;
 use crate::lib_reloader::LibReloader;
 use crate::message::MessageSource;
 use crate::reloader::FunctionState;
@@ -102,7 +104,13 @@ pub trait HotProgram {
         Subscription::none()
     }
 
-    fn theme(&self, _state: &Self::State, _window: window::Id) -> Option<Self::Theme> {
+    fn theme(
+        &self,
+        _state: &Self::State,
+        _window: window::Id,
+        _fn_state: &mut FunctionState,
+        _reloader: Option<&Arc<Mutex<LibReloader>>>,
+    ) -> Option<Self::Theme> {
         None
     }
 
@@ -182,8 +190,14 @@ pub fn with_title<P: HotProgram>(
             self.program.view(state, window, fn_state, reloader)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
-            self.program.theme(state, window)
+        fn theme(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Option<Self::Theme> {
+            self.program.theme(state, window, fn_state, reloader)
         }
 
         fn settings(&self) -> Settings {
@@ -293,8 +307,14 @@ pub fn with_subscription<P: HotProgram>(
             self.program.title(state, window)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
-            self.program.theme(state, window)
+        fn theme(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Option<Self::Theme> {
+            self.program.theme(state, window, fn_state, reloader)
         }
 
         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
@@ -315,16 +335,21 @@ pub fn with_subscription<P: HotProgram>(
 /// Decorates a [`Program`] with the given theme function.
 pub fn with_theme<P: HotProgram>(
     program: P,
-    f: impl Fn(&P::State, window::Id) -> Option<P::Theme>,
+    f: impl IntoHotTheme<P::State, P::Theme>,
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
-    struct WithTheme<P, F> {
+    let hot_theme = HotTheme::new(f);
+
+    struct WithTheme<P, F>
+    where
+        P: HotProgram,
+    {
         program: P,
-        theme: F,
+        theme: HotTheme<F, P::State, P::Theme>,
     }
 
     impl<P: HotProgram, F> HotProgram for WithTheme<P, F>
     where
-        F: Fn(&P::State, window::Id) -> Option<P::Theme>,
+        F: IntoHotTheme<P::State, P::Theme>,
     {
         type State = P::State;
         type Message = P::Message;
@@ -332,8 +357,14 @@ pub fn with_theme<P: HotProgram>(
         type Renderer = P::Renderer;
         type Executor = P::Executor;
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
-            (self.theme)(state, window)
+        fn theme(
+            &self,
+            state: &Self::State,
+            _window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Option<Self::Theme> {
+            self.theme.theme(state, fn_state, reloader)
         }
 
         fn name() -> &'static str {
@@ -398,7 +429,10 @@ pub fn with_theme<P: HotProgram>(
         }
     }
 
-    WithTheme { program, theme: f }
+    WithTheme {
+        program,
+        theme: hot_theme,
+    }
 }
 
 /// Decorates a [`Program`] with the given style function.
@@ -478,8 +512,14 @@ pub fn with_style<P: HotProgram>(
             self.program.subscription(state, fn_state, reloader)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
-            self.program.theme(state, window)
+        fn theme(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Option<Self::Theme> {
+            self.program.theme(state, window, fn_state, reloader)
         }
 
         fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
@@ -563,8 +603,14 @@ pub fn with_scale_factor<P: HotProgram>(
             self.program.subscription(state, fn_state, reloader)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
-            self.program.theme(state, window)
+        fn theme(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Option<Self::Theme> {
+            self.program.theme(state, window, fn_state, reloader)
         }
 
         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
@@ -656,8 +702,14 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             self.program.subscription(state, fn_state, reloader)
         }
 
-        fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
-            self.program.theme(state, window)
+        fn theme(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            fn_state: &mut FunctionState,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Option<Self::Theme> {
+            self.program.theme(state, window, fn_state, reloader)
         }
 
         fn style(&self, state: &Self::State, theme: &Self::Theme) -> theme::Style {
