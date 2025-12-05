@@ -16,12 +16,17 @@ use iced_core::{
 };
 use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{
-    Container, Text, column, container::Style as ContainerStyle, row, sensor, text::Style, themer,
+    Container, Text, column, container::Style as ContainerStyle, row, sensor, space, text::Style,
+    themer,
 };
 use iced_winit::{program::Program, runtime::Task};
+use log::info;
 use thiserror::Error;
 
-use crate::{hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource};
+use crate::{
+    DESERIALIZE_STATE_FUNCTION_NAME, HotFunctionError, SERIALIZE_STATE_FUNCTION_NAME,
+    hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource,
+};
 
 const DEFAULT_TARGET_DIR: &str = "target/reload";
 const PROFILE: &str = "debug";
@@ -186,6 +191,20 @@ impl<P: HotProgram> Debug for Message<P> {
     }
 }
 
+enum DynamicStateAction {
+    Serialize,
+    Deserialize,
+}
+
+impl DynamicStateAction {
+    fn function_name(&self) -> &'static str {
+        match self {
+            DynamicStateAction::Serialize => SERIALIZE_STATE_FUNCTION_NAME,
+            DynamicStateAction::Deserialize => DESERIALIZE_STATE_FUNCTION_NAME,
+        }
+    }
+}
+
 pub struct ReadyToReload;
 
 #[derive(Clone)]
@@ -216,6 +235,8 @@ type UpdateChannel = (MTx<ReadyToReload>, MAsyncRx<ReadyToReload>);
 
 pub struct Reloader<P: HotProgram + 'static> {
     state: P::State,
+    serialized_state_ptr: *mut u8,
+    serialized_state_len: usize,
     reloader_state: ReloaderState,
     lib_reloader: Option<Arc<Mutex<LibReloader>>>,
     reloader_settings: ReloaderSettings,
@@ -223,6 +244,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     sensor_key: u16,
     update_fn_state: FunctionState,
     subscription_fn_state: Mutex<FunctionState>,
+    theme_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
 }
 
@@ -239,6 +261,8 @@ where
         let (state, program_task) = program.boot();
         let reloader = Self {
             state,
+            serialized_state_ptr: std::ptr::null_mut(),
+            serialized_state_len: 0,
             reloader_state: ReloaderState::Compiling,
             lib_reloader: None,
             reloader_settings: reloader_settings.clone(),
@@ -246,6 +270,7 @@ where
             sensor_key: 0,
             update_fn_state: FunctionState::Static,
             subscription_fn_state: Mutex::new(FunctionState::Static),
+            theme_fn_state: Mutex::new(FunctionState::Static),
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
         };
 
@@ -342,6 +367,8 @@ where
                 Task::none()
             }
             Message::SendReadySignal => {
+                self.dynamic_state_action(DynamicStateAction::Serialize)
+                    .ok();
                 self.update_channel
                     .0
                     .send(ReadyToReload)
@@ -352,6 +379,8 @@ where
                 match &self.reloader_state {
                     ReloaderState::Reloading(num) => {
                         if *num == 1 {
+                            self.dynamic_state_action(DynamicStateAction::Deserialize)
+                                .ok();
                             self.reloader_state = ReloaderState::Ready;
                         } else {
                             self.reloader_state = ReloaderState::Reloading(num - 1);
@@ -375,10 +404,8 @@ where
         program: &P,
         window: window::Id,
     ) -> Element<'a, Message<P>, P::Theme, P::Renderer> {
-        let with_theme = |content| {
-            let theme = program
-                .theme(&self.state, window)
-                .unwrap_or(P::Theme::default(Mode::default()));
+        let with_default_theme = |content| {
+            let theme = P::Theme::default(Mode::Dark);
 
             let derive_theme = move || {
                 theme
@@ -408,21 +435,21 @@ where
                 .center_x(Length::Fill)
                 .center_y(Length::Fill);
 
-                with_theme(content.into())
+                with_default_theme(content.into())
             }
             ReloaderState::Error(error) => {
                 let content = Container::new(Text::new(error.to_string()).size(20))
                     .center_x(Length::Fill)
                     .center_y(Length::Fill);
 
-                with_theme(content.into())
+                with_default_theme(content.into())
             }
             ReloaderState::Compiling => {
                 let content = Container::new(Text::new("Compiling...").size(20))
                     .center_x(Length::Fill)
                     .center_y(Length::Fill);
 
-                with_theme(content.into())
+                with_default_theme(content.into())
             }
         };
 
@@ -459,25 +486,38 @@ where
 
         let view_fn = Container::new(function_state(&view_fn_state, "View")).padding(3);
         let update_fn = Container::new(function_state(&self.update_fn_state, "Update")).padding(3);
-        let subscription_fn = Container::new(function_state(
-            &self
-                .subscription_fn_state
-                .try_lock()
-                .map(|m| m.clone())
-                .unwrap_or(FunctionState::Static),
-            "Subscription",
-        ))
-        .padding(3);
 
-        let function_states = row![view_fn, update_fn, subscription_fn]
-            .spacing(100)
-            .padding(Padding {
-                left: 20.,
-                right: 20.,
-                ..Default::default()
-            });
+        let sub_fn_state = self
+            .subscription_fn_state
+            .try_lock()
+            .map(|m| m.clone())
+            .unwrap_or(FunctionState::Static);
+        let subscription_fn =
+            Container::new(function_state(&sub_fn_state, "Subscription")).padding(3);
 
-        let top_bar = with_theme(
+        let theme_fn_state = self
+            .theme_fn_state
+            .try_lock()
+            .map(|m| m.clone())
+            .unwrap_or(FunctionState::Static);
+        let theme_fn = Container::new(function_state(&theme_fn_state, "Theme")).padding(3);
+
+        let function_states = row![
+            space().width(Length::Fill),
+            view_fn,
+            update_fn,
+            subscription_fn,
+            theme_fn,
+            space().width(Length::Fill)
+        ]
+        .spacing(100)
+        .padding(Padding {
+            left: 20.,
+            right: 20.,
+            ..Default::default()
+        });
+
+        let top_bar = with_default_theme(
             Container::new(function_states)
                 .style(|_| ContainerStyle {
                     background: Some(Background::Color(Color::BLACK)),
@@ -509,7 +549,20 @@ where
     }
 
     pub fn theme(&self, program: &P, window: window::Id) -> Option<P::Theme> {
-        program.theme(&self.state, window)
+        if let Ok(mut theme_fn_state) = self.theme_fn_state.lock() {
+            if self.reloader_state == ReloaderState::Ready {
+                program.theme(
+                    &self.state,
+                    window,
+                    &mut theme_fn_state,
+                    self.lib_reloader.as_ref(),
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     pub fn style(&self, program: &P, theme: &P::Theme) -> theme::Style {
@@ -684,6 +737,92 @@ where
                 }
             }
         })
+    }
+
+    fn dynamic_state_action(&mut self, action: DynamicStateAction) -> Result<(), HotFunctionError> {
+        let reloader = self
+            .lib_reloader
+            .as_ref()
+            .expect("reloader not initialized");
+
+        let Ok(reloader) = reloader.lock() else {
+            return Err(HotFunctionError::LockAcquisitionError);
+        };
+
+        match action {
+            DynamicStateAction::Serialize => {
+                if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
+                    let Ok(free_fn) = (unsafe {
+                        reloader.get_symbol::<fn(*mut u8, usize)>(b"free_serialized_data")
+                    }) else {
+                        log::warn!("Failed to get free_serialized_data function");
+                        self.serialized_state_ptr = std::ptr::null_mut();
+                        self.serialized_state_len = 0;
+                        return Ok(());
+                    };
+
+                    free_fn(self.serialized_state_ptr, self.serialized_state_len);
+                    self.serialized_state_ptr = std::ptr::null_mut();
+                    self.serialized_state_len = 0;
+                }
+
+                let Ok(serialize_fn) = (unsafe {
+                    reloader.get_symbol::<fn(&P::State, *mut *mut u8, *mut usize) -> Result<(), HotFunctionError>>(
+                        action.function_name().as_bytes(),
+                    )
+                }) else {
+                    log::info!("Failed to get state action function, assuming no dynamic state");
+                    return Err(HotFunctionError::FunctionNotFound(action.function_name()));
+                };
+
+                log::info!("state action: {}", action.function_name());
+                serialize_fn(
+                    &self.state,
+                    &mut self.serialized_state_ptr,
+                    &mut self.serialized_state_len,
+                )
+                .inspect_err(|e| log::error!("{e}"))?;
+
+                info!("Size of serialized state: {}", self.serialized_state_len);
+            }
+            DynamicStateAction::Deserialize => {
+                let Ok(deserialize_fn) = (unsafe {
+                    reloader.get_symbol::<fn(&mut P::State, *const u8, usize) -> Result<(), HotFunctionError>>(
+                        action.function_name().as_bytes(),
+                    )
+                }) else {
+                    log::info!("Failed to get state action function, assuming no dynamic state");
+                    return Err(HotFunctionError::FunctionNotFound(action.function_name()));
+                };
+
+                log::info!("size of serialized state: {}", self.serialized_state_len);
+                log::info!("state action: {}", action.function_name());
+                deserialize_fn(
+                    &mut self.state,
+                    self.serialized_state_ptr,
+                    self.serialized_state_len,
+                )
+                .inspect_err(|e| log::error!("Failed to deserialize state: {}", e))?;
+
+                // Free the memory after successful deserialization
+                if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
+                    let Ok(free_fn) = (unsafe {
+                        reloader.get_symbol::<fn(*mut u8, usize)>(b"free_serialized_data")
+                    }) else {
+                        log::warn!("Failed to get free_serialized_data function");
+                        // Continue anyway
+                        self.serialized_state_ptr = std::ptr::null_mut();
+                        self.serialized_state_len = 0;
+                        return Ok(());
+                    };
+
+                    free_fn(self.serialized_state_ptr, self.serialized_state_len);
+                    self.serialized_state_ptr = std::ptr::null_mut();
+                    self.serialized_state_len = 0;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

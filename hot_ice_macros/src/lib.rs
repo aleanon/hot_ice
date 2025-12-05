@@ -1,7 +1,80 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use quote::quote;
-use syn::{Ident, ItemFn, parse_macro_input};
+use quote::{ToTokens, quote};
+use syn::{Attribute, DeriveInput, Ident, ItemFn, parse_macro_input};
+
+/// Ensure the item derives `Serialize`, `Deserialize`, `Default`, TypeHash and the struct has `#[serde(default)]`
+/// - If `Deserialize` and `Serialize` are already present in any #[derive(...)] attribute, we do nothing.
+/// - If `#[serde(default)]` is already present on the item, we do nothing.
+#[proc_macro_attribute]
+pub fn hot_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut ast = parse_macro_input!(item as DeriveInput);
+
+    let mut has_deserialize = false;
+    let mut has_serialize = false;
+    let mut has_default = false;
+    let mut has_type_hash = false;
+
+    for attr in &ast.attrs {
+        if attr.path().is_ident("derive") {
+            let token_str = attr.meta.to_token_stream().to_string();
+            if token_str.contains("Deserialize") {
+                has_deserialize = true;
+            }
+            if token_str.contains("Serialize") {
+                has_serialize = true;
+            }
+            if token_str.contains("Default") {
+                has_default = true;
+            }
+            if token_str.contains("TypeHash") {
+                has_type_hash = true;
+            }
+        }
+    }
+
+    // Collect all missing derives
+    let mut derives = vec![];
+
+    if !has_serialize {
+        derives.push(quote! { serde::Serialize });
+    }
+    if !has_deserialize {
+        derives.push(quote! { serde::Deserialize });
+    }
+    if !has_default {
+        derives.push(quote! { ::core::default::Default });
+    }
+    if !has_type_hash {
+        derives.push(quote! { type_hash::TypeHash });
+    }
+
+    if !derives.is_empty() {
+        let deser_attr: Attribute = syn::parse_quote!(#[derive(#(#derives),*)]);
+        ast.attrs.push(deser_attr);
+    }
+
+    let mut has_struct_default = false;
+    for attr in &ast.attrs {
+        if attr.path().is_ident("serde") {
+            if attr.meta.to_token_stream().to_string().contains("default") {
+                has_struct_default = true;
+                break;
+            }
+        }
+    }
+
+    if !has_struct_default {
+        let default_attr: Attribute = syn::parse_quote!(#[serde(default)]);
+        ast.attrs.push(default_attr);
+    }
+
+    quote!(
+        use hot_ice::*;
+        #ast
+    )
+    .into()
+}
 
 /// Attribute macro that transforms a boot/new function to handle DynMessage conversion.
 ///

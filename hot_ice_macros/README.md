@@ -1,111 +1,275 @@
 # hot_ice_macros
 
-Procedural macros for the hot_ice hot-reloading framework.
+Procedural macros for the Hot Ice framework - enabling hot-reloading capabilities for Iced applications.
 
-## `#[hot_update]`
+## Overview
 
-An attribute macro that transforms an update function to handle `DynMessage` conversion automatically.
+`hot_ice_macros` provides a set of attribute macros that transform your application's lifecycle methods to work with Hot Ice's dynamic message system and hot-reloading infrastructure. These macros handle the conversion between your typed messages and Hot Ice's type-erased `HotMessage`, allowing your application code to remain clean and type-safe while supporting runtime code reloading.
 
-### Usage
+## Macros
 
-Instead of manually writing the boilerplate for converting between `DynMessage` and your concrete message type:
+### `#[boot]`
 
+Transforms a boot/initialization function to work with Hot Ice's message system.
+
+**Before:**
 ```rust
-// Before - manual conversion
-fn update(&self, message: hot_ice::DynMessage) -> Result<hot_ice::runtime::Task<hot_ice::DynMessage>, hot_ice::HotFunctionError> {
-    let message = message.into_message()
-        .map_err(|_| hot_ice::HotFunctionError::MessageDowncastError)?;
+fn new() -> (Self, Task<Message>) {
+    // Your initialization logic
+}
+```
+
+**After transformation:**
+```rust
+fn new() -> (Self, Task<hot_ice::HotMessage>) {
+    use hot_ice::IntoBoot;
     
-    Ok(Self::my_update_logic(self, message)
-        .map(hot_ice::DynMessage::into_hot_message))
+    let (app, task) = Self::new_inner().into_boot();
+    (app, task.map(hot_ice::DynMessage::into_hot_message))
 }
 
-fn my_update_logic(&self, message: Message) -> hot_ice::runtime::Task<Message> {
-    // Your actual update logic
-}
-```
-
-You can simply use the macro:
-
-```rust
-// After - with macro
-use hot_ice::hot_update;
-
-#[hot_update]
-fn my_update_logic(&self, message: Message) -> Task<Message> {
-    // Your actual update logic
+fn new_inner() -> (Self, Task<Message>) {
+    // Your initialization logic (unchanged)
 }
 ```
 
-The macro will:
-1. **Always** generate a function named `update` that handles `DynMessage` conversion
-2. Keep your original function with its original name for direct use
-3. Handle errors with proper `HotFunctionError::MessageDowncastError`
-4. Automatically map the return `Task<Message>` to `Task<DynMessage>`
-
-### Example
-
+**Usage:**
 ```rust
-use hot_ice::hot_update;
-use hot_ice::runtime::Task;
+#[boot]
+fn new() -> (Self, Task<Message>) {
+    (Self { /* ... */ }, Task::none())
+}
+```
 
-struct MyApp;
+### `#[update]`
 
-#[hot_update]
-fn handle_message(&self, message: MyMessage) -> Task<MyMessage> {
+Transforms an update function to handle dynamic message conversion with error handling.
+
+**Before:**
+```rust
+fn update(&mut self, message: Message) -> Task<Message> {
+    // Your update logic
+}
+```
+
+**After transformation:**
+```rust
+#[unsafe(no_mangle)]
+fn update(&mut self, message: hot_ice::HotMessage) 
+    -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> 
+{
+    let message = message.into_message()
+        .map_err(|message| hot_ice::HotFunctionError::MessageDowncastError(
+            format!("{:?}", message)
+        ))?;
+    
+    let task = self.update_inner(message)
+        .map(hot_ice::DynMessage::into_hot_message);
+    
+    Ok(task)
+}
+
+fn update_inner(&mut self, message: Message) -> Task<Message> {
+    // Your update logic (unchanged)
+}
+```
+
+**Usage:**
+```rust
+#[update]
+fn update(&mut self, message: Message) -> Task<Message> {
     match message {
-        MyMessage::Increment => Task::none(),
-        MyMessage::Decrement => Task::none(),
+        Message::Increment => self.counter += 1,
+        Message::Decrement => self.counter -= 1,
+    }
+    Task::none()
+}
+```
+
+**Note:** The `#[unsafe(no_mangle)]` attribute ensures the function name is preserved for dynamic loading.
+
+### `#[view]`
+
+Transforms a view function to return elements with `HotMessage` instead of your typed `Message`.
+
+**Before:**
+```rust
+fn view(&self) -> Element<Message> {
+    // Your view logic
+}
+```
+
+**After transformation:**
+```rust
+#[unsafe(no_mangle)]
+fn view(&self) -> Element<hot_ice::HotMessage> {
+    self.view_inner()
+        .map(hot_ice::DynMessage::into_hot_message)
+}
+
+fn view_inner(&self) -> Element<Message> {
+    // Your view logic (unchanged)
+}
+```
+
+**Usage:**
+```rust
+#[view]
+fn view(&self) -> Element<Message> {
+    column![
+        button("Increment").on_press(Message::Increment),
+        text(format!("Count: {}", self.counter)),
+        button("Decrement").on_press(Message::Decrement),
+    ].into()
+}
+```
+
+### `#[subscription]`
+
+Transforms a subscription function to return subscriptions with `HotMessage`.
+
+**Before:**
+```rust
+fn subscription(&self) -> Subscription<Message> {
+    // Your subscription logic
+}
+```
+
+**After transformation:**
+```rust
+#[unsafe(no_mangle)]
+fn subscription(&self) -> Subscription<hot_ice::HotMessage> {
+    self.subscription_inner()
+        .map(hot_ice::DynMessage::into_hot_message)
+}
+
+fn subscription_inner(&self) -> Subscription<Message> {
+    // Your subscription logic (unchanged)
+}
+```
+
+**Usage:**
+```rust
+#[subscription]
+fn subscription(&self) -> Subscription<Message> {
+    time::every(Duration::from_secs(1))
+        .map(|_| Message::Tick)
+}
+```
+
+**Attribute options:**
+- `#[subscription]` - Default, adds `#[unsafe(no_mangle)]` for hot-reloading
+- `#[subscription(not_hot)]` - Omits `#[unsafe(no_mangle)]`, useful for static subscriptions
+
+### `#[auto_deser]`
+
+Automatically adds serde derives and default attribute to structs for serialization support.
+
+**Usage:**
+```rust
+#[auto_deser]
+struct MyState {
+    counter: i32,
+    enabled: bool,
+}
+```
+
+**Transformation:**
+- Adds `#[derive(serde::Serialize, serde::Deserialize)]` if not present
+- Adds `#[serde(default)]` if not present
+- Skips derives that are already present
+
+**After:**
+```rust
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct MyState {
+    counter: i32,
+    enabled: bool,
+}
+```
+
+This is particularly useful for state structures that need to persist across hot-reloads.
+
+## Complete Example
+
+```rust
+use hot_ice_macros::{boot, update, view, subscription, auto_deser};
+use iced::{Element, Task, Subscription, time};
+use std::time::Duration;
+
+#[auto_deser]
+struct Counter {
+    value: i32,
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    Increment,
+    Decrement,
+    Tick,
+}
+
+impl Counter {
+    #[boot]
+    fn new() -> (Self, Task<Message>) {
+        (Self { value: 0 }, Task::none())
+    }
+    
+    #[update]
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::Increment => self.value += 1,
+            Message::Decrement => self.value -= 1,
+            Message::Tick => println!("Tick!"),
+        }
+        Task::none()
+    }
+    
+    #[view]
+    fn view(&self) -> Element<Message> {
+        column![
+            button("+").on_press(Message::Increment),
+            text(format!("Value: {}", self.value)),
+            button("-").on_press(Message::Decrement),
+        ].into()
+    }
+    
+    #[subscription]
+    fn subscription(&self) -> Subscription<Message> {
+        time::every(Duration::from_secs(1))
+            .map(|_| Message::Tick)
     }
 }
-
-// Expands to:
-//
-// fn update(&self, message: DynMessage) -> Result<Task<DynMessage>, HotFunctionError> {
-//     let message = message.into_message()
-//         .map_err(|_| HotFunctionError::MessageDowncastError)?;
-//     Ok(Self::handle_message(self, message)
-//         .map(DynMessage::into_hot_message))
-// }
-//
-// fn handle_message(&self, message: MyMessage) -> Task<MyMessage> {
-//     match message {
-//         MyMessage::Increment => Task::none(),
-//         MyMessage::Decrement => Task::none(),
-//     }
-// }
 ```
 
-### Important Notes
+## Important Notes
 
-- **The wrapper is always named `update`**: No matter what you name your function (`handle_message`, `process`, `my_update`, etc.), the generated wrapper will always be called `update`.
-- **The original function keeps its name**: You can still call `handle_message()` directly in tests or other code.
-- **Only one `#[hot_update]` per impl block**: Since the wrapper is always named `update`, you can only have one function with this attribute per type.
+### Hot Reloading Considerations
 
-### Requirements
+1. **Function Names:** If you change the name of a function marked with these macros, you must perform a full recompile. The `#[unsafe(no_mangle)]` attribute preserves function names for dynamic loading.
 
-- The function must have a `&self` receiver
-- The second parameter should be your message type
-- Must return `Task<YourMessage>`
-- Visibility modifiers (`pub`, `pub(crate)`, etc.) are preserved on the wrapper function
+2. **Message Type Changes:** Changing your `Message` enum requires special handling. Hot Ice uses type erasure, so major message type changes may require a restart.
 
-### What if I already have a function named `update`?
+3. **State Serialization:** The `#[auto_deser]` macro helps preserve state across reloads, but ensure your state structure implements `Default` for proper initialization.
 
-If you annotate a function that's already named `update`:
+## How It Works
 
-```rust
-#[hot_update]
-fn update(&self, message: Message) -> Task<Message> {
-    // Your logic
-}
-```
+Hot Ice uses a dynamic library system for hot-reloading:
 
-You'll get a **compilation error** because you'll have two functions named `update`. In this case, simply rename your function to something else:
+1. Your application code is compiled into a dynamic library (`.so`/`.dll`/`.dylib`)
+2. These macros transform your functions to use type-erased `HotMessage` at ABI boundaries
+3. The Hot Ice runtime watches for file changes and reloads the library
+4. Your application continues running with the new code, preserving state when possible
 
-```rust
-#[hot_update]
-fn update_impl(&self, message: Message) -> Task<Message> {
-    // Your logic
-}
-// This generates `update()` wrapper and keeps `update_impl()`
-```
+The inner functions (e.g., `update_inner`, `view_inner`) remain type-safe and work with your original `Message` type, while the outer functions handle the conversion to/from `HotMessage`.
+
+## Dependencies
+
+- `syn` 2.0 - Parsing Rust code
+- `quote` 1.0 - Code generation
+- `proc-macro2` 1.0 - Procedural macro support
+
+## License
+
+Part of the Hot Ice project.

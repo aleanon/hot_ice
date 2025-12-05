@@ -11,7 +11,7 @@ use crate::{
     DynMessage, boot,
     hot_program::{self, HotProgram},
     hot_subscription::IntoHotSubscription,
-    hot_theme::ThemeFn,
+    hot_theme::IntoHotTheme,
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
@@ -146,7 +146,7 @@ where
             iced_debug::init(iced_debug::Metadata {
                 name: P::name(),
                 theme: None,
-                can_time_travel: false,
+                can_time_travel: cfg!(feature = "time-travel"),
             });
 
             iced_devtools::attach(program)
@@ -323,10 +323,10 @@ where
     /// Sets the theme logic of the [`Application`].
     pub fn theme(
         self,
-        f: impl ThemeFn<P::State, P::Theme>,
+        f: impl IntoHotTheme<P::State, P::Theme>,
     ) -> HotIce<impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme>> {
         HotIce {
-            program: hot_program::with_theme(self.program, move |state, _window| f.theme(state)),
+            program: hot_program::with_theme(self.program, f),
             settings: self.settings,
             window: self.window,
             reloader_settings: self.reloader_settings,

@@ -89,6 +89,8 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Subscription<MessageSource<Message>> {
+        log::info!("Calling subscription()");
+
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self

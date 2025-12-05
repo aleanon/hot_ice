@@ -45,8 +45,11 @@ pub struct HotMessage(pub Box<dyn DynMessage>);
 impl HotMessage {
     pub fn from_message<M: DynMessage>(message: M) -> Self {
         if TypeId::of::<M>() == TypeId::of::<Self>() {
-            let any_box = message.clone_boxed().into_any();
-            return *any_box.downcast::<Self>().unwrap();
+            unsafe {
+                let result = std::ptr::read(&message as *const M as *const Self);
+                std::mem::forget(message);
+                return result;
+            }
         }
         Self(Box::new(message) as Box<dyn DynMessage>)
     }

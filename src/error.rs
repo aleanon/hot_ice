@@ -21,4 +21,18 @@ pub enum HotFunctionError {
     LockAcquisitionError,
     #[error("Failed to downcast Message: {0}")]
     MessageDowncastError(String),
+    #[error("State type mismatch")]
+    StateTypeMismatch,
+    #[error("Failed to serialize state")]
+    FailedToSerializeState,
+    #[error("Failed to deserialize state: {0}")]
+    FailedToDeserializeState(String),
+    #[error("Failed to acquire lock on state")]
+    StateLockAcquisitionError,
+}
+
+impl<T> From<std::sync::PoisonError<T>> for HotFunctionError {
+    fn from(_: std::sync::PoisonError<T>) -> Self {
+        HotFunctionError::StateLockAcquisitionError
+    }
 }

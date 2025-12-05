@@ -144,6 +144,8 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Task<MessageSource<Message>> {
+        log::info!("Calling update()");
+
         match message {
             MessageSource::Static(message) => {
                 self.run_static(state, message, fn_state, FunctionState::Static)

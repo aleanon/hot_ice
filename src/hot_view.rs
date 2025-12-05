@@ -91,6 +91,8 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Element<'a, MessageSource<Message>, Theme, Renderer> {
+        log::info!("Calling view()");
+
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self.function.static_view(state).map(MessageSource::Static);

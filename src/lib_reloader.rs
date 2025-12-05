@@ -281,18 +281,19 @@ impl LibReloader {
                                 "{} was removed, trying to watch it again...",
                                 lib_file.display()
                             );
-                        }
-                        loop {
-                            if debouncer
-                                .watch(&lib_file, RecursiveMode::NonRecursive)
-                                .is_ok()
-                            {
-                                log::info!("watching {lib_file:?} again after removal");
-                                signal_change();
-                                break;
+                            loop {
+                                if debouncer
+                                    .watch(&lib_file, RecursiveMode::NonRecursive)
+                                    .is_ok()
+                                {
+                                    log::info!("watching {lib_file:?} again after removal");
+                                    break;
+                                }
+                                thread::sleep(Duration::from_millis(500));
                             }
-                            thread::sleep(Duration::from_millis(500));
                         }
+
+                        signal_change();
                     }
                 }
             }
