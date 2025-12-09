@@ -28,6 +28,7 @@ pub use hot_application::hot_application;
 pub use hot_ice_macros::{boot, hot_state, subscription, update, view};
 pub use hot_state::HotState;
 pub use message::{DynMessage, HotMessage};
+pub use reloader::ReloaderSettings;
 
 pub const SERIALIZE_STATE_FUNCTION_NAME: &str = "serialize_state";
 pub const DESERIALIZE_STATE_FUNCTION_NAME: &str = "deserialize_state";

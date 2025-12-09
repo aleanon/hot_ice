@@ -69,6 +69,8 @@ where
 {
     program: P,
     reloader_settings: ReloaderSettings,
+    settings: Settings,
+    window_settings: window::Settings,
     lib_name: &'static str,
 }
 
@@ -77,10 +79,18 @@ where
     P: HotProgram + 'static,
     P::Message: Clone,
 {
-    pub fn new(program: P, reloader_settings: ReloaderSettings, lib_name: &'static str) -> Self {
+    pub fn new(
+        program: P,
+        reloader_settings: ReloaderSettings,
+        settings: Settings,
+        window_settings: window::Settings,
+        lib_name: &'static str,
+    ) -> Self {
         Self {
             program,
             reloader_settings,
+            settings,
+            window_settings,
             lib_name,
         }
     }
@@ -118,11 +128,11 @@ where
     }
 
     fn settings(&self) -> Settings {
-        Settings::default()
+        self.settings.clone()
     }
 
     fn window(&self) -> Option<window::Settings> {
-        Some(window::Settings::default())
+        Some(self.window_settings.clone())
     }
 
     fn title(&self, state: &Self::State, window: window::Id) -> String {
@@ -262,7 +272,8 @@ where
         lib_name: &'static str,
     ) -> (Self, Task<Message<P>>) {
         let (state, program_task) = program.boot();
-        let reloader = Self {
+
+        let mut reloader = Self {
             state,
             serialized_state_ptr: std::ptr::null_mut(),
             serialized_state_len: 0,
@@ -280,10 +291,33 @@ where
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
         };
 
-        let task = Task::stream(Self::build_library(
-            reloader.lib_name,
-            reloader_settings.target_dir.clone(),
-        ));
+        let task = if reloader_settings.compile_in_reloader {
+            Task::stream(Self::build_library(
+                reloader.lib_name,
+                reloader_settings.target_dir.clone(),
+            ))
+        } else {
+            reloader.reloader_state = ReloaderState::Ready;
+            // let mut lib_reloader = LibReloader::new(
+            //     &reloader.reloader_settings.lib_dir,
+            //     reloader.lib_name,
+            //     Some(reloader.reloader_settings.file_watch_debounce),
+            //     None,
+            // )
+            // .expect("Unable to create LibReloader");
+
+            // let change_subscriber = lib_reloader.subscribe_to_file_changes();
+            // let lib_reloader = Arc::new(Mutex::new(lib_reloader));
+            // reloader.lib_reloader = Some(lib_reloader.clone());
+
+            // reloader.reloader_state = ReloaderState::Ready;
+            // Task::stream(Self::listen_for_lib_changes(
+            //     lib_reloader,
+            //     reloader.update_channel.1.clone(),
+            //     change_subscriber,
+            // ))
+            Task::none()
+        };
 
         (reloader, task.chain(program_task.map(Message::AppMessage)))
     }
@@ -866,7 +900,7 @@ fn build_args(library_name: &str) -> Vec<&str> {
         library_name,
         "--lib",
         "--crate-type",
-        "cdylib",
+        "dylib",
         "--profile",
         "dev",
         "--",

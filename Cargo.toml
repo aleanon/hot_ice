@@ -21,12 +21,12 @@ notify-debouncer-full = "0.6.0"
 thiserror = "2.0"
 crc32fast = "1.5.0"
 type_hash = "0.3.0"
-iced_winit = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
-iced_core = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
-iced_futures = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
-iced_widget = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
-iced_devtools = { git = "https://github.com/iced-rs/iced.git", branch = "master", optional = true }
-iced_debug = { git = "https://github.com/iced-rs/iced.git", branch = "master", optional = true }
+iced_winit = { version = "0.14.0" }
+iced_core = { version = "0.14.0" }
+iced_futures = { version = "0.14.0" }
+iced_widget = { version = "0.14.0" }
+iced_devtools = { version = "0.14.0", optional = true }
+iced_debug = { version = "0.14.0", optional = true }
 cargo_metadata = "0.23.1"
 serde = "*"
 serde_json = "1.0.145"

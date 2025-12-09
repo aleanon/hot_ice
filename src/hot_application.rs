@@ -142,7 +142,13 @@ where
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {
-        let program = Reload::new(self.program, self.reloader_settings, self.lib_name);
+        let program = Reload::new(
+            self.program,
+            self.reloader_settings,
+            self.settings,
+            self.window,
+            self.lib_name,
+        );
 
         #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
         let program = {
