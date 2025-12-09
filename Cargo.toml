@@ -4,11 +4,90 @@ version = "0.3.0"
 edition = "2024"
 
 [lib]
-crate-type = ["lib"]
+crate-type = ["dylib"]
 
 [features]
-debug = ["dep:iced_devtools", "dep:iced_debug"]
-time-travel = ["iced_devtools/time-travel"]
+default = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "thread-pool",
+    "linux-theme-detection",
+    "x11",
+    "wayland",
+]
+# Enables the `wgpu` GPU-accelerated renderer with all its default features (Vulkan, Metal, DX12, OpenGL, and WebGPU)
+wgpu = ["iced/wgpu"]
+# Enables the `wgpu` GPU-accelerated renderer with the minimum required features (no backends!)
+wgpu-bare = ["iced/wgpu-bare"]
+# Enables the `tiny-skia` software renderer
+tiny-skia = ["iced/tiny-skia"]
+# Enables the `image` widget
+image = ["iced/image"]
+# Enables the `image` widget, without any built-in codecs of the `image` crate
+image-without-codecs = ["iced/image-without-codecs"]
+# Enables the `svg` widget
+svg = ["iced/svg"]
+# Enables the `canvas` widget
+canvas = ["iced/canvas"]
+# Enables the `qr_code` widget
+qr_code = ["iced/qr_code"]
+# Enables the `markdown` widget
+markdown = ["iced/markdown"]
+# Enables lazy widgets
+lazy = ["iced/lazy"]
+# Enables debug metrics in native platforms (press F12)
+debug = [
+    "iced_winit/debug",
+    "dep:iced_devtools",
+    "dep:iced_debug",
+    "iced/debug",
+]
+# Enables time-travel debugging (very experimental!)
+time-travel = ["debug", "iced_devtools/time-travel", "iced/time-travel"]
+# Enables hot reloading (very experimental!)
+hot = ["debug", "iced/hot"]
+# Enables the tester developer tool for recording and playing tests (press F12)
+tester = ["iced/tester"]
+# Enables the `thread-pool` futures executor as the `executor::Default` on native platforms
+thread-pool = ["iced/thread-pool"]
+# Enables `tokio` as the `executor::Default` on native platforms
+tokio = ["iced/tokio"]
+# Enables `smol` as the `executor::Default` on native platforms
+smol = ["iced/smol"]
+# Enables querying system information
+sysinfo = ["iced/sysinfo"]
+# Enables broken "sRGB linear" blending to reproduce color management of the Web
+web-colors = ["iced/web-colors"]
+# Enables pixel snapping for crisp edges by default (can cause jitter!)
+crisp = ["iced/crisp"]
+# Enables the WebGL backend
+webgl = ["iced/webgl"]
+# Enables syntax highlighting
+highlighter = ["iced/highlighter"]
+# Enables the `widget::selector` module
+selector = ["iced/selector"]
+# Enables the advanced module
+advanced = ["iced/advanced"]
+# Embeds Fira Sans into the final application; useful for testing and Wasm builds
+fira-sans = ["iced/fira-sans"]
+# Enables basic text shaping by default
+basic-shaping = ["iced/basic-shaping"]
+# Enables advanced text shaping by default
+advanced-shaping = ["iced/advanced-shaping"]
+# Enables strict assertions for debugging purposes at the expense of performance
+strict-assertions = ["iced/strict-assertions"]
+# Redraws on every runtime event, and not only when a widget requests it
+unconditional-rendering = ["iced/unconditional-rendering"]
+# Enables support for the `sipper` library
+sipper = ["iced/sipper"]
+# Enables Linux system theme detection
+linux-theme-detection = ["iced/linux-theme-detection"]
+# Enables the Unix X11 backend
+x11 = ["iced/x11"]
+# Enables the Unix Wayland backend
+wayland = ["iced/wayland"]
 
 [dependencies]
 hot_ice_macros = { path = "hot_ice_macros" }
@@ -24,7 +103,8 @@ type_hash = "0.3.0"
 iced_winit = { version = "0.14.0" }
 iced_core = { version = "0.14.0" }
 iced_futures = { version = "0.14.0" }
-iced_widget = { version = "0.14.0" }
+iced_widget = { version = "0.14.1" }
+iced = { version = "0.14.0" }
 iced_devtools = { version = "0.14.0", optional = true }
 iced_debug = { version = "0.14.0", optional = true }
 cargo_metadata = "0.23.1"

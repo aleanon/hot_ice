@@ -29,7 +29,7 @@ use crate::{
 };
 
 const DEFAULT_TARGET_DIR: &str = "target/reload";
-const PROFILE: &str = "debug";
+const DEFAULT_LIB_DIR: &str = "target/reload/debug";
 
 #[derive(Clone)]
 pub struct ReloaderSettings {
@@ -38,7 +38,7 @@ pub struct ReloaderSettings {
     /// The directory where the compiled dynamic library is located, default: target/reload/debug
     pub lib_dir: String,
     /// Default is true, if this is set to false, you need to initiate the cargo watch command youself
-    /// and make the lib accessible in the supplied `lib_path`
+    /// and make the lib accessible in the supplied `lib_dir`
     pub compile_in_reloader: bool,
     /// The time between each check for a new dynamic library file, default is 25ms
     pub file_watch_debounce: Duration,
@@ -49,12 +49,9 @@ pub struct ReloaderSettings {
 
 impl Default for ReloaderSettings {
     fn default() -> Self {
-        let target_dir = PathBuf::from(DEFAULT_TARGET_DIR);
-        let mut lib_path = target_dir.clone();
-        lib_path.push(PROFILE);
         Self {
-            target_dir: String::from(target_dir.to_str().expect("invalid utf8 in path")),
-            lib_dir: String::from(lib_path.to_str().expect("invalid utf8 in path")),
+            target_dir: DEFAULT_TARGET_DIR.to_string(),
+            lib_dir: DEFAULT_LIB_DIR.to_string(),
             compile_in_reloader: true,
             file_watch_debounce: Duration::from_millis(25),
             watch_dir: None,
@@ -297,26 +294,24 @@ where
                 reloader_settings.target_dir.clone(),
             ))
         } else {
+            let mut lib_reloader = LibReloader::new(
+                &reloader.reloader_settings.lib_dir,
+                reloader.lib_name,
+                Some(reloader.reloader_settings.file_watch_debounce),
+                None,
+            )
+            .expect("Unable to create LibReloader");
+
+            let change_subscriber = lib_reloader.subscribe_to_file_changes();
+            let lib_reloader = Arc::new(Mutex::new(lib_reloader));
+            reloader.lib_reloader = Some(lib_reloader.clone());
+
             reloader.reloader_state = ReloaderState::Ready;
-            // let mut lib_reloader = LibReloader::new(
-            //     &reloader.reloader_settings.lib_dir,
-            //     reloader.lib_name,
-            //     Some(reloader.reloader_settings.file_watch_debounce),
-            //     None,
-            // )
-            // .expect("Unable to create LibReloader");
-
-            // let change_subscriber = lib_reloader.subscribe_to_file_changes();
-            // let lib_reloader = Arc::new(Mutex::new(lib_reloader));
-            // reloader.lib_reloader = Some(lib_reloader.clone());
-
-            // reloader.reloader_state = ReloaderState::Ready;
-            // Task::stream(Self::listen_for_lib_changes(
-            //     lib_reloader,
-            //     reloader.update_channel.1.clone(),
-            //     change_subscriber,
-            // ))
-            Task::none()
+            Task::stream(Self::listen_for_lib_changes(
+                lib_reloader,
+                reloader.update_channel.1.clone(),
+                change_subscriber,
+            ))
         };
 
         (reloader, task.chain(program_task.map(Message::AppMessage)))

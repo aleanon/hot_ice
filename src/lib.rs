@@ -27,6 +27,7 @@ pub use error::HotFunctionError;
 pub use hot_application::hot_application;
 pub use hot_ice_macros::{boot, hot_state, subscription, update, view};
 pub use hot_state::HotState;
+pub use iced;
 pub use message::{DynMessage, HotMessage};
 pub use reloader::ReloaderSettings;
 
