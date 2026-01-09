@@ -888,8 +888,8 @@ where
     }
 }
 
-fn build_args(library_name: &str) -> Vec<&str> {
-    vec![
+fn build_args(library_name: &str) -> [&str; 11] {
+    [
         "rustc",
         "--package",
         library_name,

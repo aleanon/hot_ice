@@ -3,9 +3,6 @@ name = "hot_ice"
 version = "0.3.0"
 edition = "2024"
 
-[lib]
-crate-type = ["dylib"]
-
 [features]
 default = [
     "wgpu",
