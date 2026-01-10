@@ -1,14 +1,12 @@
-use proc_macro::TokenStream;
-use proc_macro2::Span;
-use quote::{ToTokens, quote};
-use syn::{Attribute, DeriveInput, Ident, ItemFn, parse_macro_input};
+use quote::{quote, quote_spanned};
+use syn::{parse_macro_input, spanned::Spanned};
 
-/// Ensure the item derives `Serialize`, `Deserialize`, `Default`, TypeHash and the struct has `#[serde(default)]`
-/// - If `Deserialize` and `Serialize` are already present in any #[derive(...)] attribute, we do nothing.
-/// - If `#[serde(default)]` is already present on the item, we do nothing.
 #[proc_macro_attribute]
-pub fn hot_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut ast = parse_macro_input!(item as DeriveInput);
+pub fn hot_state(
+    _attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let mut ast = parse_macro_input!(item as syn::DeriveInput);
 
     let mut has_deserialize = false;
     let mut has_serialize = false;
@@ -17,7 +15,7 @@ pub fn hot_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for attr in &ast.attrs {
         if attr.path().is_ident("derive") {
-            let token_str = attr.meta.to_token_stream().to_string();
+            let token_str = quote::ToTokens::to_token_stream(&attr.meta).to_string();
             if token_str.contains("Deserialize") {
                 has_deserialize = true;
             }
@@ -50,14 +48,17 @@ pub fn hot_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     if !derives.is_empty() {
-        let deser_attr: Attribute = syn::parse_quote!(#[derive(#(#derives),*)]);
+        let deser_attr: syn::Attribute = syn::parse_quote!(#[derive(#(#derives),*)]);
         ast.attrs.push(deser_attr);
     }
 
     let mut has_struct_default = false;
     for attr in &ast.attrs {
         if attr.path().is_ident("serde") {
-            if attr.meta.to_token_stream().to_string().contains("default") {
+            if quote::ToTokens::to_token_stream(&attr.meta)
+                .to_string()
+                .contains("default")
+            {
                 has_struct_default = true;
                 break;
             }
@@ -65,7 +66,7 @@ pub fn hot_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     if !has_struct_default {
-        let default_attr: Attribute = syn::parse_quote!(#[serde(default)]);
+        let default_attr: syn::Attribute = syn::parse_quote!(#[serde(default)]);
         ast.attrs.push(default_attr);
     }
 
@@ -76,198 +77,211 @@ pub fn hot_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Attribute macro that transforms a boot/new function to handle DynMessage conversion.
-///
-/// **Mark:** If you change the name of your function, you must recompile
-///
-/// Takes a function with signature:
-/// ```ignore
-/// fn my_update_logic(&self, message: Message) -> Task<Message>
-/// ```
-///
-/// And transforms it into:
-/// ```ignore
-/// fn my_update_logic(&mut self, message: hot_ice::HotMessage) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
-///     let message = message.into_message()
-///         .map_err(|message|hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}",message)))
-///
-///     let task = self.my_update_logic_inner(self, message)
-///         .map(hot_ice::DynMessage::into_hot_message);
-///
-///     Ok(task)
-/// }
-///
-/// fn my_update_logic_inner(&self, message: Message) -> Task<Message> {
-///     // Your logic here
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn boot(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(item as ItemFn);
+fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
     let inner_fn_name = format!("{}_inner", &input.sig.ident);
-    let inner_fn_ident = Ident::new(&inner_fn_name, Span::call_site());
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
 
     let vis = &input.vis;
 
-    let expanded = quote! {
-        #vis fn #original_fn_name() -> (Self, Task<hot_ice::HotMessage>) {
-            use hot_ice::IntoBoot;
+    // Extract the Message type from the return type
+    let message_type = extract_message_type_from_return(&input.sig.output);
 
-            let (app, task) = Self::#inner_fn_ident().into_boot();
+    let expanded = if hot_state {
+        if let Some(msg_type) = message_type {
+            // We have a Task<Message> in the return type - call function directly
+            quote! {
+                #vis fn #original_fn_name() -> (hot_ice::HotState, hot_ice::iced::Task<hot_ice::HotMessage>) {
+                    let (app, task): (Self, hot_ice::iced::Task<#msg_type>) = Self::#inner_fn_ident();
 
-            (app, task.map(hot_ice::DynMessage::into_hot_message))
+                    (
+                        hot_ice::HotState::new(app),
+                        task.map(hot_ice::DynMessage::into_hot_message)
+                    )
+                }
+
+                #input
+            }
+        } else {
+            // No Task in return type - just return Self
+            quote! {
+                #vis fn #original_fn_name() -> (hot_ice::HotState, hot_ice::iced::Task<hot_ice::HotMessage>) {
+                    let app = Self::#inner_fn_ident();
+
+                    (
+                        hot_ice::HotState::new(app),
+                        hot_ice::iced::Task::none()
+                    )
+                }
+
+                #input
+            }
         }
-
-        #input
-    };
-
-    TokenStream::from(expanded)
-}
-
-/// Attribute macro that transforms an update function to handle DynMessage conversion.
-///
-/// **Mark:** If you change the name of your function, you must recompile
-///
-/// Takes a function with signature:
-/// ```ignore
-/// fn my_update_logic(&self, message: Message) -> Task<Message>
-/// ```
-///
-/// And transforms it into:
-/// ```ignore
-/// fn my_update_logic(&mut self, message: hot_ice::HotMessage) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
-///     let message = message.into_message()
-///         .map_err(|message|hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}",message)))
-///
-///     let task = self.my_update_logic_inner(self, message)
-///         .map(hot_ice::DynMessage::into_hot_message);
-///
-///     Ok(task)
-/// }
-///
-/// fn my_update_logic_inner(&self, message: Message) -> Task<Message> {
-///     // Your logic here
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn update(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(item as ItemFn);
-
-    let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
-    let inner_fn_ident = Ident::new(&inner_fn_name, Span::call_site());
-    input.sig.ident = inner_fn_ident.clone();
-
-    let vis = &input.vis;
-
-    let expanded = quote! {
-        #[unsafe(no_mangle)]
-        #vis fn #original_fn_name(
-            &mut self,
-            message: hot_ice::HotMessage,
-        ) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
-            let message = message.into_message()
-                .map_err(|message| hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}", message)))?;
-
-            let task = self.#inner_fn_ident(message)
-                .map(hot_ice::DynMessage::into_hot_message);
-
-            Ok(task)
-        }
-        #input
-    };
-
-    TokenStream::from(expanded)
-}
-
-/// Attribute macro that transforms a view function to handle HotMessage conversion.
-///
-/// **Mark:** If you change the name of your function, you must recompile
-///
-/// Takes a function with signature:
-/// ```ignore
-/// fn my_view(&self) -> Element<Message>
-/// ```
-///
-/// And transforms it into:
-/// ```ignore
-/// fn my_view(&self) -> Element<hot_ice::HotMessage> {
-///     self.my_view_inner()
-///         .map(hot_ice::DynMessage::into_hot_message)
-/// }
-///
-/// fn my_view_inner(&self) -> Element<Message> {
-///     // Your view logic here
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn view(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(item as ItemFn);
-
-    let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
-    let inner_fn_ident = Ident::new(&inner_fn_name, Span::call_site());
-    input.sig.ident = inner_fn_ident.clone();
-
-    let vis = &input.vis;
-
-    let expanded = quote! {
-        #[unsafe(no_mangle)]
-        #vis fn #original_fn_name(&self) -> Element<hot_ice::HotMessage> {
-            self.#inner_fn_ident()
-                .map(hot_ice::DynMessage::into_hot_message)
-        }
-
-        #input
-    };
-
-    TokenStream::from(expanded)
-}
-
-/// Attribute macro that transforms an subscription function to return HotMessage.
-///
-/// **Mark:** If you change the name of your function, you must recompile
-///
-/// Takes a function with signature:
-/// ```ignore
-/// fn my_subscription_logic(&self, message: Message) -> Task<Message>
-/// ```
-///
-/// And transforms it into:
-/// ```ignore
-/// fn my_subscription_logic(&self) -> Subscription<hot_ice::HotMessage> {
-///
-///     Self::my_subscription_logic_inner(self, message)
-///         .map(hot_ice::DynMessage::into_hot_message)
-/// }
-///
-/// fn my_subscription_logic_inner(&self, message: Message) -> Task<Message> {
-///     // Your logic here
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn subscription(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(item as ItemFn);
-
-    let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
-    let inner_fn_ident = Ident::new(&inner_fn_name, Span::call_site());
-    input.sig.ident = inner_fn_ident.clone();
-
-    let vis = &input.vis;
-
-    let is_hot = if attr.is_empty() {
-        true
     } else {
-        let attr_str = attr.to_string().to_lowercase();
-        match attr_str.as_str() {
-            "not_hot" | "not-hot" => false,
-            _ => true,
+        if let Some(msg_type) = message_type {
+            quote! {
+                #vis fn #original_fn_name() -> (Self, hot_ice::iced::Task<hot_ice::HotMessage>) {
+                    use hot_ice::IntoBoot;
+
+                    let (app, task): (Self, hot_ice::iced::Task<#msg_type>) = Self::#inner_fn_ident();
+
+                    (app, task.map(hot_ice::DynMessage::into_hot_message))
+                }
+
+                #input
+            }
+        } else {
+            quote! {
+                #vis fn #original_fn_name() -> (Self, hot_ice::iced::Task<hot_ice::HotMessage>) {
+                    use hot_ice::IntoBoot;
+
+                    let app = Self::#inner_fn_ident();
+
+                    (app, hot_ice::iced::Task::none())
+                }
+
+                #input
+            }
         }
     };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+/// Extract the Message type from a return type like (Self, Task<Message>)
+fn extract_message_type_from_return(output: &syn::ReturnType) -> Option<syn::Type> {
+    if let syn::ReturnType::Type(_, ty) = output {
+        if let syn::Type::Tuple(tuple) = &**ty {
+            // Look for Task<T> in the tuple elements
+            for elem in &tuple.elems {
+                if let Some(msg_type) = extract_task_inner_type(elem) {
+                    return Some(msg_type);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract T from Task<T>
+fn extract_task_inner_type(ty: &syn::Type) -> Option<syn::Type> {
+    if let syn::Type::Path(type_path) = ty {
+        // Check if the last segment is "Task"
+        if let Some(last_seg) = type_path.path.segments.last() {
+            if last_seg.ident == "Task" {
+                // Extract the generic argument
+                if let syn::PathArguments::AngleBracketed(args) = &last_seg.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
+                        return Some(inner_type.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
+    input.sig.ident = inner_fn_ident.clone();
+
+    let vis = &input.vis;
+
+    let expanded = if hot_state {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(
+                state: &mut hot_ice::HotState,
+                message: hot_ice::HotMessage,
+            ) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
+                let message = message
+                    .into_message()
+                    .map_err(|m| hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}", m)))?;
+
+                let task = Self::#inner_fn_ident(state.ref_mut_state(), message)
+                    .map(hot_ice::DynMessage::into_hot_message);
+
+                Ok(task)
+            }
+            #input
+        }
+    } else {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(
+                &mut self,
+                message: hot_ice::HotMessage,
+            ) -> Result<Task<hot_ice::HotMessage>, hot_ice::HotFunctionError> {
+                let message = message.into_message()
+                    .map_err(|message| hot_ice::HotFunctionError::MessageDowncastError(format!("{:?}", message)))?;
+
+                let task = self.#inner_fn_ident(message)
+                    .map(hot_ice::DynMessage::into_hot_message);
+
+                Ok(task)
+            }
+            #input
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
+    input.sig.ident = inner_fn_ident.clone();
+
+    let vis = &input.vis;
+
+    let expanded = if hot_state {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(state: &hot_ice::HotState) -> Element<hot_ice::HotMessage> {
+                Self::#inner_fn_ident(state.ref_state())
+                    .map(hot_ice::DynMessage::into_hot_message)
+            }
+
+            #input
+        }
+    } else {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(&self) -> Element<hot_ice::HotMessage> {
+                self.#inner_fn_ident()
+                    .map(hot_ice::DynMessage::into_hot_message)
+            }
+
+            #input
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+fn subscription(
+    hot_state: bool,
+    is_hot: bool,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
+    input.sig.ident = inner_fn_ident.clone();
+
+    let vis = &input.vis;
 
     let no_mangle_attr = if is_hot {
         quote! { #[unsafe(no_mangle)] }
@@ -275,15 +289,242 @@ pub fn subscription(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    let expanded = quote! {
-        #no_mangle_attr
-        #vis fn #original_fn_name(&self) -> Subscription<hot_ice::HotMessage> {
-            self.#inner_fn_ident()
-                .map(hot_ice::DynMessage::into_hot_message)
+    let expanded = if hot_state {
+        quote! {
+            #no_mangle_attr
+            #vis fn #original_fn_name(state: &hot_ice::HotState) -> Subscription<hot_ice::HotMessage> {
+                Self::#inner_fn_ident(state.ref_state())
+                    .map(hot_ice::DynMessage::into_hot_message)
+            }
+            #input
         }
-
-        #input
+    } else {
+        quote! {
+            #no_mangle_attr
+            #vis fn #original_fn_name(&self) -> Subscription<hot_ice::HotMessage> {
+                self.#inner_fn_ident()
+                    .map(hot_ice::DynMessage::into_hot_message)
+            }
+            #input
+        }
     };
 
-    TokenStream::from(expanded)
+    proc_macro::TokenStream::from(expanded)
+}
+
+fn theme(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
+    input.sig.ident = inner_fn_ident.clone();
+
+    let vis = &input.vis;
+    let return_type = &input.sig.output;
+
+    let expanded = if hot_state {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(state: &hot_ice::HotState) #return_type {
+                Self::#inner_fn_ident(state.ref_state())
+            }
+            #input
+        }
+    } else {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(&self) #return_type {
+                self.#inner_fn_ident()
+            }
+            #input
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+fn style(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
+
+    let vis = &input.vis;
+    let return_type = &input.sig.output;
+
+    let mut args_no_receiver = Vec::new();
+    let mut arg_names = Vec::new();
+    for arg in input.sig.inputs.iter().skip(1) {
+        args_no_receiver.push(arg);
+        if let syn::FnArg::Typed(pat_type) = arg {
+            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                arg_names.push(&pat_ident.ident);
+            }
+        }
+    }
+
+    input.sig.ident = inner_fn_ident.clone();
+
+    let expanded = if hot_state {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(state: &hot_ice::HotState, #(#args_no_receiver),*) #return_type {
+                Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*)
+            }
+            #input
+        }
+    } else {
+        let original_inputs = &input.sig.inputs;
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(#original_inputs) #return_type {
+                self.#inner_fn_ident(#(#arg_names),*)
+            }
+            #input
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+fn scale_factor(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
+
+    let original_fn_name = input.sig.ident.clone();
+    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
+
+    let vis = &input.vis;
+    let return_type = &input.sig.output;
+
+    let mut args_no_receiver = Vec::new();
+    let mut arg_names = Vec::new();
+    for arg in input.sig.inputs.iter().skip(1) {
+        args_no_receiver.push(arg);
+        if let syn::FnArg::Typed(pat_type) = arg {
+            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                arg_names.push(&pat_ident.ident);
+            }
+        }
+    }
+
+    input.sig.ident = inner_fn_ident.clone();
+
+    let expanded = if hot_state {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(state: &hot_ice::HotState, #(#args_no_receiver),*) #return_type {
+                Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*)
+            }
+            #input
+        }
+    } else {
+        let original_inputs = &input.sig.inputs;
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(#original_inputs) #return_type {
+                self.#inner_fn_ident(#(#arg_names),*)
+            }
+            #input
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+enum FnType {
+    Boot,
+    Update,
+    View,
+    Subscription,
+    Theme,
+    Style,
+    ScaleFactor,
+    Unknown,
+}
+
+fn detect_fn_type(input: &syn::ItemFn) -> FnType {
+    let return_type = &input.sig.output;
+    let return_type_str = quote!(#return_type).to_string();
+    let inputs = &input.sig.inputs;
+
+    // Boot: 0 args, returns tuple
+    if inputs.is_empty() {
+        if let syn::ReturnType::Type(_, ty) = return_type {
+            if let syn::Type::Tuple(_) = **ty {
+                return FnType::Boot;
+            }
+        }
+    }
+
+    if inputs.len() == 1 {
+        if return_type_str.contains("Element") {
+            return FnType::View;
+        }
+        if return_type_str.contains("Subscription") {
+            return FnType::Subscription;
+        }
+        if return_type_str.contains("Option") && return_type_str.contains("Theme") {
+            return FnType::Theme;
+        }
+    }
+
+    if inputs.len() == 2 {
+        if return_type_str.contains("Task") {
+            return FnType::Update;
+        }
+        if return_type_str.contains("Style") {
+            return FnType::Style;
+        }
+        if return_type_str.contains("f32") {
+            return FnType::ScaleFactor;
+        }
+    }
+
+    FnType::Unknown
+}
+
+#[proc_macro_attribute]
+pub fn hot_fn(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let item_clone = item.clone();
+    let input = parse_macro_input!(item_clone as syn::ItemFn);
+
+    // Parse the attribute to determine if hot_state is enabled
+    let attr_str = attr.to_string();
+    let hot_state = attr_str.contains("hot_state");
+
+    // For subscription, also check for not_hot/not-hot
+    let is_hot = !attr_str.contains("not_hot") && !attr_str.contains("not-hot");
+
+    let fn_type = detect_fn_type(&input);
+
+    match fn_type {
+        FnType::Boot => boot(hot_state, item),
+        FnType::Update => update(hot_state, item),
+        FnType::View => view(hot_state, item),
+        FnType::Subscription => subscription(hot_state, is_hot, item),
+        FnType::Theme => theme(hot_state, item),
+        FnType::Style => style(hot_state, item),
+        FnType::ScaleFactor => scale_factor(hot_state, item),
+        FnType::Unknown => {
+            let msg = "Unsupported function, supported functions are\n
+                .boot\n
+                .update\n
+                .view\n
+                .subscription\n
+                .theme\n
+                .style\n
+                .scale_factor";
+
+            let tokens = quote_spanned! {input.span() =>
+                compile_error!(#msg);
+            };
+            tokens.into()
+        }
+    }
 }

@@ -76,7 +76,7 @@ where
 
         fn boot(&self) -> (State, Task<MessageSource<Self::Message>>) {
             let (state, task) = self.boot.boot();
-            (state, task.map(|message| MessageSource::Static(message)))
+            (state, task.map(MessageSource::Static))
         }
 
         fn update(
