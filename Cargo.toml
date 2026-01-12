@@ -86,6 +86,8 @@ linux-theme-detection = ["iced/linux-theme-detection"]
 x11 = ["iced/x11"]
 # Enables the Unix Wayland backend
 wayland = ["iced/wayland"]
+# Enables verbose logging
+verbose = []
 
 [dependencies]
 hot_ice_macros = { path = "hot_ice_macros" }

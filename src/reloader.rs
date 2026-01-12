@@ -431,9 +431,9 @@ where
                         )
                     }
                 }
-                Task::none()
+                Task::done(Message::None)
             }
-            Message::None => panic!(),
+            Message::None => Task::none(),
         }
     }
 
@@ -568,10 +568,16 @@ where
                         .subscription(&self.state, &mut fn_state, self.lib_reloader.as_ref())
                         .map(Message::AppMessage)
                 } else {
+                    #[cfg(feature = "verbose")]
+                    log::error!("Called subscription when Reloader was not ready");
                     Subscription::none()
                 }
             }
-            Err(_) => Subscription::none(),
+            Err(_) => {
+                #[cfg(feature = "verbose")]
+                log::error!("Failed to get lock on subscription_fn_state");
+                Subscription::none()
+            }
         }
     }
 
@@ -584,21 +590,34 @@ where
                     &mut title_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+            } else {
+                #[cfg(feature = "verbose")]
+                log::error!("Called title when Reloader was not ready");
             }
+        } else {
+            #[cfg(feature = "verbose")]
+            log::error!("Failed to get lock on title_fn_state");
         };
         String::from("Hot Ice")
     }
 
     pub fn theme(&self, program: &P, window: window::Id) -> Option<P::Theme> {
-        if let Ok(mut theme_fn_state) = self.theme_fn_state.lock() {
-            if self.reloader_state == ReloaderState::Ready {
-                return program.theme(
-                    &self.state,
-                    window,
-                    &mut theme_fn_state,
-                    self.lib_reloader.as_ref(),
-                );
-            }
+        let Ok(mut theme_fn_state) = self.theme_fn_state.lock() else {
+            #[cfg(feature = "verbose")]
+            log::error!("Failed to get lock on theme_fn_state");
+            return None;
+        };
+
+        if self.reloader_state == ReloaderState::Ready {
+            return program.theme(
+                &self.state,
+                window,
+                &mut theme_fn_state,
+                self.lib_reloader.as_ref(),
+            );
+        } else {
+            #[cfg(feature = "verbose")]
+            log::error!("Called theme when Reloader was not ready");
         }
         None
     }
@@ -612,7 +631,13 @@ where
                     &mut style_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+            } else {
+                #[cfg(feature = "verbose")]
+                log::error!("Called style when Reloader was not ready");
             }
+        } else {
+            #[cfg(feature = "verbose")]
+            log::error!("Failed to get lock on style_fn_state");
         };
         theme.base()
     }
@@ -626,7 +651,13 @@ where
                     &mut scale_factor_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+            } else {
+                #[cfg(feature = "verbose")]
+                log::error!("Called scale_factor when Reloader was not ready");
             }
+        } else {
+            #[cfg(feature = "verbose")]
+            log::error!("Failed to get lock on scale_factor_fn_state");
         };
         1.0
     }

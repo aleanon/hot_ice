@@ -15,7 +15,7 @@ use std::time::Duration;
 use crate::error::HotReloaderError;
 
 // #[cfg(feature = "verbose")]
-use log;
+// use log;
 
 /// Manages watches a library (dylib) file, loads it using
 /// [`libloading::Library`] and [provides access to its
