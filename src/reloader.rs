@@ -9,6 +9,10 @@ use std::{
 
 use cargo_metadata::{MetadataCommand, camino::Utf8PathBuf};
 use crossfire::{AsyncRx, MAsyncRx, MTx, mpmc};
+use hot_ice_common::{
+    DESERIALIZE_STATE_FUNCTION_NAME, FREE_SERIALIZED_DATA_FUNCTION_NAME,
+    SERIALIZE_STATE_FUNCTION_NAME,
+};
 use iced_core::{
     Background, Color, Element, Length, Padding, Settings, Theme,
     theme::{self, Base, Mode},
@@ -24,8 +28,7 @@ use log::info;
 use thiserror::Error;
 
 use crate::{
-    DESERIALIZE_STATE_FUNCTION_NAME, HotFunctionError, SERIALIZE_STATE_FUNCTION_NAME,
-    hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource,
+    HotFunctionError, hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource,
 };
 
 const DEFAULT_TARGET_DIR: &str = "target/reload";
@@ -462,29 +465,21 @@ where
                 )
                 .map(Message::AppMessage),
             ReloaderState::Reloading(_) => {
-                let content = Container::new(
-                    sensor(Text::new("Reloading...").size(20))
-                        .key(self.sensor_key)
-                        .on_show(|_| Message::SendReadySignal),
-                )
-                .center_x(Length::Fill)
-                .center_y(Length::Fill);
+                let content = sensor(Text::new("Reloading...").size(20))
+                    .key(self.sensor_key)
+                    .on_show(|_| Message::SendReadySignal);
 
-                with_default_theme(content.into())
+                with_default_theme(Element::from(content))
             }
             ReloaderState::Error(error) => {
-                let content = Container::new(Text::new(error.to_string()).size(20))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill);
+                let error_text = Text::new(error.to_string()).size(20);
 
-                with_default_theme(content.into())
+                with_default_theme(Element::from(error_text))
             }
             ReloaderState::Compiling => {
-                let content = Container::new(Text::new("Compiling...").size(20))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill);
+                let compilation_message = Text::new("Compiling...").size(20);
 
-                with_default_theme(content.into())
+                with_default_theme(Element::from(compilation_message))
             }
         };
 
@@ -558,7 +553,8 @@ where
                     background: Some(Background::Color(Color::BLACK)),
                     ..Default::default()
                 })
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .into(),
         );
 
         column![top_bar, program_view].into()
@@ -815,7 +811,9 @@ where
             DynamicStateAction::Serialize => {
                 if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
                     let Ok(free_fn) = (unsafe {
-                        reloader.get_symbol::<fn(*mut u8, usize)>(b"free_serialized_data")
+                        reloader.get_symbol::<fn(*mut u8, usize)>(
+                            FREE_SERIALIZED_DATA_FUNCTION_NAME.as_bytes(),
+                        )
                     }) else {
                         log::warn!("Failed to get free_serialized_data function");
                         self.serialized_state_ptr = std::ptr::null_mut();
@@ -869,7 +867,9 @@ where
                 // Free the memory after successful deserialization
                 if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
                     let Ok(free_fn) = (unsafe {
-                        reloader.get_symbol::<fn(*mut u8, usize)>(b"free_serialized_data")
+                        reloader.get_symbol::<fn(*mut u8, usize)>(
+                            FREE_SERIALIZED_DATA_FUNCTION_NAME.as_bytes(),
+                        )
                     }) else {
                         log::warn!("Failed to get free_serialized_data function");
                         // Continue anyway

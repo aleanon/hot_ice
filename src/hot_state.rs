@@ -1,8 +1,6 @@
 use serde::{Serialize, de::DeserializeOwned};
 use std::any::Any;
 
-use type_hash::TypeHash;
-
 use crate::HotFunctionError;
 
 pub trait DynState: Send + Sync + 'static {
@@ -13,7 +11,7 @@ pub trait DynState: Send + Sync + 'static {
 
 impl<T> DynState for T
 where
-    T: Send + Sync + 'static + Serialize + TypeHash,
+    T: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     fn as_any(&self) -> &dyn Any {
         self
@@ -30,18 +28,15 @@ where
 
 pub struct HotState {
     state: Box<dyn DynState>,
-    type_hash: u64,
 }
 
 impl HotState {
     pub fn new<T>(state: T) -> Self
     where
-        T: DynState + Serialize + TypeHash + Send + Sync + 'static,
+        T: DynState,
     {
-        let type_hash = T::type_hash();
         Self {
             state: Box::new(state),
-            type_hash,
         }
     }
 
@@ -67,7 +62,7 @@ impl HotState {
 
     pub fn deserialize_state<T>(&mut self, data: &[u8]) -> Result<(), HotFunctionError>
     where
-        T: DynState + DeserializeOwned + TypeHash + 'static + Default,
+        T: DynState + DeserializeOwned + 'static + Default,
     {
         let new_state: T = if data.is_empty() {
             T::default()
@@ -79,9 +74,8 @@ impl HotState {
         };
 
         let old_state = std::mem::replace(&mut self.state, Box::new(new_state));
-        std::mem::forget(old_state);
 
-        self.type_hash = T::type_hash();
+        std::mem::forget(old_state);
 
         Ok(())
     }

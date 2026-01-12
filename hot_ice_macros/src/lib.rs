@@ -1,5 +1,12 @@
+use hot_ice_common::{
+    DESERIALIZE_STATE_FUNCTION_NAME, FREE_SERIALIZED_DATA_FUNCTION_NAME,
+    SERIALIZE_STATE_FUNCTION_NAME,
+};
 use quote::{quote, quote_spanned};
 use syn::{parse_macro_input, spanned::Spanned};
+
+// Used to make sure the generated code does not conflict with user-defined functions
+const INNER_FUNCTION_POSTFIX: &str = "sdlksldkdkslskfjei";
 
 #[proc_macro_attribute]
 pub fn hot_state(
@@ -11,7 +18,6 @@ pub fn hot_state(
     let mut has_deserialize = false;
     let mut has_serialize = false;
     let mut has_default = false;
-    let mut has_type_hash = false;
 
     for attr in &ast.attrs {
         if attr.path().is_ident("derive") {
@@ -24,9 +30,6 @@ pub fn hot_state(
             }
             if token_str.contains("Default") {
                 has_default = true;
-            }
-            if token_str.contains("TypeHash") {
-                has_type_hash = true;
             }
         }
     }
@@ -42,9 +45,6 @@ pub fn hot_state(
     }
     if !has_default {
         derives.push(quote! { ::core::default::Default });
-    }
-    if !has_type_hash {
-        derives.push(quote! { type_hash::TypeHash });
     }
 
     if !derives.is_empty() {
@@ -70,9 +70,70 @@ pub fn hot_state(
         ast.attrs.push(default_attr);
     }
 
+    let struct_name = &ast.ident;
+    let serialize_state_ident = proc_macro2::Ident::new(
+        SERIALIZE_STATE_FUNCTION_NAME,
+        proc_macro2::Span::call_site(),
+    );
+    let deserialize_state_ident = proc_macro2::Ident::new(
+        DESERIALIZE_STATE_FUNCTION_NAME,
+        proc_macro2::Span::call_site(),
+    );
+    let free_serialized_data_ident = proc_macro2::Ident::new(
+        FREE_SERIALIZED_DATA_FUNCTION_NAME,
+        proc_macro2::Span::call_site(),
+    );
+
     quote!(
         use hot_ice::*;
+
         #ast
+
+        impl #struct_name {
+            /// Serialize state and return raw pointer + length
+            /// Caller must call free_serialized_data to free the memory
+            #[unsafe(no_mangle)]
+            pub fn #serialize_state_ident(
+                state: &hot_ice::HotState,
+                out_ptr: *mut *mut u8,
+                out_len: *mut usize,
+            ) -> Result<(), hot_ice::HotFunctionError> {
+                let data = state.serialize_state::<Self>()?;
+
+                let len = data.len();
+                let mut boxed_slice = data.into_boxed_slice();
+                let ptr = boxed_slice.as_mut_ptr();
+                std::mem::forget(boxed_slice);
+
+                unsafe {
+                    *out_ptr = ptr;
+                    *out_len = len;
+                }
+
+                Ok(())
+            }
+
+            #[unsafe(no_mangle)]
+            pub fn #deserialize_state_ident(
+                state: &mut hot_ice::HotState,
+                data_ptr: *const u8,
+                data_len: usize,
+            ) -> Result<(), hot_ice::HotFunctionError> {
+                let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
+                state.deserialize_state::<Self>(data)
+            }
+
+            /// Free memory allocated by serialize_state
+            #[unsafe(no_mangle)]
+            pub fn #free_serialized_data_ident(ptr: *mut u8, len: usize) {
+                if !ptr.is_null() && len > 0 {
+                    unsafe {
+                        let _ = Vec::from_raw_parts(ptr, len, len);
+                        // Vec is dropped here, freeing the memory
+                    }
+                }
+            }
+        }
     )
     .into()
 }
@@ -81,7 +142,7 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
 
@@ -106,7 +167,7 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
                 #input
             }
         } else {
-            // No Task in return type - just return Self
+            // No Task in return type - create empty task
             quote! {
                 #vis fn #original_fn_name() -> (hot_ice::HotState, hot_ice::iced::Task<hot_ice::HotMessage>) {
                     let app = Self::#inner_fn_ident();
@@ -188,7 +249,7 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
 
@@ -238,7 +299,7 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
 
@@ -277,7 +338,7 @@ fn subscription(
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
 
@@ -292,7 +353,7 @@ fn subscription(
     let expanded = if hot_state {
         quote! {
             #no_mangle_attr
-            #vis fn #original_fn_name(state: &hot_ice::HotState) -> Subscription<hot_ice::HotMessage> {
+            #vis fn #original_fn_name(state: &hot_ice::HotState) -> hot_ice::iced::Subscription<hot_ice::HotMessage> {
                 Self::#inner_fn_ident(state.ref_state())
                     .map(hot_ice::DynMessage::into_hot_message)
             }
@@ -301,7 +362,7 @@ fn subscription(
     } else {
         quote! {
             #no_mangle_attr
-            #vis fn #original_fn_name(&self) -> Subscription<hot_ice::HotMessage> {
+            #vis fn #original_fn_name(&self) -> hot_ice::iced::Subscription<hot_ice::HotMessage> {
                 self.#inner_fn_ident()
                     .map(hot_ice::DynMessage::into_hot_message)
             }
@@ -316,7 +377,7 @@ fn theme(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStr
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
 
@@ -348,7 +409,7 @@ fn style(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStr
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
 
     let vis = &input.vis;
@@ -393,7 +454,7 @@ fn scale_factor(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::T
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner", &input.sig.ident);
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
 
     let vis = &input.vis;
