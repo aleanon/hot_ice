@@ -929,12 +929,13 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crossfire"
-version = "2.1.9"
+version = "2.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f19636ec7667a64122ad23414cd773dcdd32532a7df7a4f68ad16bba0db5f02"
+checksum = "fd901251b9b46c1752c85edfee0aee718c03a85a065f4126d32e5d6d419edf48"
 dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
+ "enum_dispatch",
  "futures-core",
  "parking_lot",
 ]
@@ -1075,6 +1076,18 @@ name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
+
+[[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "enumflags2"
@@ -1723,8 +1736,8 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "once_cell",
+ "rmp-serde",
  "serde",
- "serde_json",
  "thiserror 2.0.17",
 ]
 
@@ -3850,6 +3863,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c6a884d2998352bb4daf0183589aec883f16a6da1f4dde84d8e2e9a5409a1ce"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
 ]
 
 [[package]]

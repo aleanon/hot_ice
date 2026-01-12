@@ -22,7 +22,7 @@ where
     }
 
     fn serialize_state(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(self).map_err(|e| e.to_string())
+        rmp_serde::to_vec(self).map_err(|e| e.to_string())
     }
 }
 
@@ -67,7 +67,7 @@ impl HotState {
         let new_state: T = if data.is_empty() {
             T::default()
         } else {
-            match serde_json::from_slice(data) {
+            match rmp_serde::from_slice(data) {
                 Ok(state) => state,
                 Err(_) => T::default(),
             }
