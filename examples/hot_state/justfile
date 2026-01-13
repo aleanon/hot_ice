@@ -1,0 +1,12 @@
+default:
+    @just --list
+
+watch:
+    CARGO_TARGET_DIR=target/reload \
+    CARGO_PROFILE_DEV_DEBUG=false \
+    cargo watch -w src/ui -d 0.01 -x "rustc --package ui --crate-type cdylib --profile dev -- \
+    -C codegen-units=1 \
+    -C opt-level=0 \
+    -C debuginfo=0 \
+    -C lto=off \
+    -C link-arg=-Wl,--whole-archive"
