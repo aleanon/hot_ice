@@ -1,0 +1,10 @@
+
+[workspace]
+package.edition = "2024"
+package.version = "0.1.0"
+members = ["hot_fn", "ui"]
+
+[workspace.dependencies]
+hot_ice = { path = "../.." }
+ui = { path = "ui" }
+serde = { version = "1.0", features = ["derive"] }
