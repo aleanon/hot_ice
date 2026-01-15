@@ -304,6 +304,8 @@ where
             let lib_reloader = Arc::new(Mutex::new(lib_reloader));
             reloader.lib_reloader = Some(lib_reloader.clone());
 
+            reloader.sync_fonts_to_library();
+
             reloader.reloader_state = ReloaderState::Ready;
             Task::stream(Self::listen_for_lib_changes(
                 lib_reloader,
@@ -343,6 +345,8 @@ where
                 let change_subscriber = lib_reloader.subscribe_to_file_changes();
                 let lib_reloader = Arc::new(Mutex::new(lib_reloader));
                 self.lib_reloader = Some(lib_reloader.clone());
+
+                self.sync_fonts_to_library();
 
                 self.reloader_state = ReloaderState::Ready;
                 let listen_for_lib_changes = Task::stream(Self::listen_for_lib_changes(
@@ -417,7 +421,6 @@ where
                                 .inspect_err(|e| log::error!("{}", e))
                                 .ok();
 
-                            // Sync fonts to the newly loaded library
                             self.sync_fonts_to_library();
 
                             self.reloader_state = ReloaderState::Ready;
@@ -931,21 +934,25 @@ where
 
     /// Sync all tracked fonts to the loaded library's font system
     fn sync_fonts_to_library(&self) {
+        #[cfg(feature = "verbose")]
         log::info!(
             "sync_fonts_to_library called with {} fonts",
             self.loaded_fonts.len()
         );
 
         let Some(lib_reloader) = &self.lib_reloader else {
+            #[cfg(feature = "verbose")]
             log::warn!("lib_reloader is None");
             return;
         };
 
         let Ok(reloader) = lib_reloader.lock() else {
+            #[cfg(feature = "verbose")]
             log::error!("Failed to acquire lock on lib_reloader");
             return;
         };
 
+        #[cfg(feature = "verbose")]
         log::info!("Attempting to get font loading function symbol");
 
         // Get the font loading function from the library
@@ -954,6 +961,7 @@ where
                 hot_ice_common::LOAD_FONT_FUNCTION_NAME.as_bytes(),
             )
         }) else {
+            #[cfg(feature = "verbose")]
             log::warn!(
                 "Font loading function not found in library. Function name: {}",
                 hot_ice_common::LOAD_FONT_FUNCTION_NAME
@@ -961,15 +969,17 @@ where
             return;
         };
 
+        #[cfg(feature = "verbose")]
         log::info!(
             "Font loading function found, loading {} fonts",
             self.loaded_fonts.len()
         );
 
         // Load each tracked font into the library
-        for (i, font_cow) in self.loaded_fonts.iter().enumerate() {
+        for (_i, font_cow) in self.loaded_fonts.iter().enumerate() {
             let font_bytes: &[u8] = font_cow.as_ref();
-            log::info!("Loading font {} with {} bytes", i, font_bytes.len());
+            #[cfg(feature = "verbose")]
+            log::info!("Loading font {} with {} bytes", _i, font_bytes.len());
             load_font_fn(font_bytes.as_ptr(), font_bytes.len());
         }
 
