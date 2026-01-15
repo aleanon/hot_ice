@@ -7,8 +7,7 @@ watch:
     CARGO_PROFILE_DEV_DEBUG=false \
     CARGO_PROFILE_DEV_LTO=false \
     CARGO_TARGET_DIR=target/reload \
-    cargo watch -w src/ui -d 0.01 -x "rustc --package ui --crate-type cdylib --profile dev"
-
+    cargo watch -w ui -d 0.01 -x "rustc --package ui --crate-type cdylib --profile dev"
 
 run:
-    cargo run --release
+    cargo runcc -c runcc.yml

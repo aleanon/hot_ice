@@ -6,7 +6,3 @@ edition.workspace = true
 [dependencies]
 hot_ice.workspace = true
 serde.workspace = true
-
-
-[features]
-reload = []

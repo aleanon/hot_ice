@@ -123,6 +123,7 @@ impl std::fmt::Display for ThemeChoice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct State {
     theme: ThemeChoice,
     scale: f32,
@@ -131,7 +132,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         State {
-            theme: ThemeChoice::Dark,
+            theme: ThemeChoice::default(),
             scale: 1.0,
         }
     }

@@ -1,0 +1,4 @@
+commands:
+  watch: just watch
+
+  app: cargo run --release

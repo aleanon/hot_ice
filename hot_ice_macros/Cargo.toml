@@ -7,7 +7,7 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
+hot_ice_common = { path = "../hot_ice_common" }
 syn = { version = "2.0", features = ["full"] }
 quote = "1.0"
 proc-macro2 = "1.0"
-hot_ice_common = { path = "../hot_ice_common" }

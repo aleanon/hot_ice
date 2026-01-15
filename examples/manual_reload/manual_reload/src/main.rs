@@ -11,12 +11,12 @@ fn main() {
     };
 
     hot_ice::application(State::boot, State::update, State::view)
+        .reloader_settings(reloader_settings)
         .subscription(State::subscription)
         .theme(State::theme)
         .style(State::style)
         .scale_factor(State::scale_factor)
         .title(State::title)
-        .reloader_settings(reloader_settings)
         .run()
         .unwrap();
 }

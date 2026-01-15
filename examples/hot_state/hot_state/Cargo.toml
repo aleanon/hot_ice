@@ -1,5 +1,5 @@
 [package]
-name = "hot_fn"
+name = "hot_state"
 version.workspace = true
 edition.workspace = true
 

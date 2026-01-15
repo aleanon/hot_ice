@@ -53,7 +53,7 @@ impl State {
     #[hot_ice::hot_fn(hot_state)]
     pub fn view(&self) -> Element<'_, Message> {
         let content = column![
-            text("Hot State Example").size(32),
+            text("Hot State Example").size(34),
             text("This demonstrates nested state with hot reloading").size(16),
             row![
                 container(self.counter.view().map(Message::Counter))
@@ -97,12 +97,12 @@ impl State {
     }
 
     #[hot_ice::hot_fn(hot_state)]
-    pub fn scale_factor(&self, _window: window::Id) -> f32 {
+    pub fn scale_factor(&self) -> f32 {
         self.settings.scale_factor()
     }
 
     #[hot_ice::hot_fn(hot_state)]
-    pub fn title(&self, _window: window::Id) -> String {
+    pub fn title(&self) -> String {
         format!("Hot State Example - Counter: {}", self.counter.value())
     }
 }

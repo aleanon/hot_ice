@@ -2,7 +2,7 @@
 [workspace]
 package.edition = "2024"
 package.version = "0.1.0"
-members = ["hot_state", "ui"]
+members = ["hot_message", "ui"]
 
 [workspace.dependencies]
 hot_ice = { path = "../.." }

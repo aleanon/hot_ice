@@ -12,6 +12,7 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct State {
     value: i32,
     auto_increment: bool,

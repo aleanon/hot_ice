@@ -11,15 +11,16 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct TodoItem {
     text: String,
     completed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct State {
     input: String,
-    another_field: String,
     todos: Vec<TodoItem>,
 }
 
@@ -28,7 +29,6 @@ impl State {
         (
             State {
                 input: String::new(),
-                another_field: String::new(),
                 todos: vec![
                     TodoItem {
                         text: "Learn hot_ice".to_string(),
@@ -93,7 +93,7 @@ impl State {
                     .on_press(Message::DeleteTodo(index))
                     .padding(5),
             ]
-            .spacing(11)
+            .spacing(10)
             .align_y(hot_ice::iced::Alignment::Center);
 
             todo_column = todo_column.push(todo_row);
