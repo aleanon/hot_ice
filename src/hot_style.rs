@@ -7,7 +7,7 @@ use std::{
 
 use iced_core::theme;
 
-use crate::{error::HotFunctionError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
 
 pub trait IntoHotStyle<State, Theme> {
     fn static_style(&self, state: &State, theme: &Theme) -> theme::Style;
@@ -18,7 +18,7 @@ pub trait IntoHotStyle<State, Theme> {
         theme: &Theme,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<theme::Style, HotFunctionError>;
+    ) -> Result<theme::Style, HotIceError>;
 }
 
 impl<T, State, Theme> IntoHotStyle<State, Theme> for T
@@ -35,21 +35,21 @@ where
         theme: &Theme,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<theme::Style, HotFunctionError> {
+    ) -> Result<theme::Style, HotIceError> {
         let lib = reloader
             .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+            .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
             lib.get_symbol::<fn(&State, &Theme) -> theme::Style>(function_name.as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+                .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
         match catch_unwind(AssertUnwindSafe(|| function(state, theme))) {
             Ok(style) => Ok(style),
             Err(err) => {
                 std::mem::forget(err);
-                Err(HotFunctionError::FunctionPaniced(function_name))
+                Err(HotIceError::FunctionPaniced(function_name))
             }
         }
     }
@@ -86,8 +86,6 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> theme::Style {
-        log::info!("Calling style()");
-
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self.function.static_style(state, theme);
@@ -102,6 +100,7 @@ where
                 style
             }
             Err(err) => {
+                log::error!("style(): {}", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function.static_style(state, theme)
             }

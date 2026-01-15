@@ -20,15 +20,15 @@ use iced_core::{
 };
 use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{
-    Container, Text, column, container::Style as ContainerStyle, row, sensor, space, text::Style,
-    themer,
+    Container, Text, column, container, container::Style as ContainerStyle, row, sensor, space,
+    text::Style, themer,
 };
 use iced_winit::{program::Program, runtime::Task};
 use log::info;
 use thiserror::Error;
 
 use crate::{
-    HotFunctionError, hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource,
+    error::HotIceError, hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource,
 };
 
 const DEFAULT_TARGET_DIR: &str = "target/reload";
@@ -160,7 +160,6 @@ pub enum Message<P>
 where
     P: HotProgram,
 {
-    None,
     CompilationComplete,
     AboutToReload,
     ReloadComplete,
@@ -182,7 +181,6 @@ where
             Self::ReloadComplete => Self::ReloadComplete,
             Self::CompilationComplete => Self::CompilationComplete,
             Self::Error(error) => Self::Error(error.clone()),
-            Self::None => Self::None,
         }
     }
 }
@@ -196,21 +194,6 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::ReloadComplete => write!(f, "ReloadComplete"),
             Self::CompilationComplete => write!(f, "CompilationComplete"),
             Self::Error(error) => write!(f, "{}", error),
-            Self::None => write!(f, "None"),
-        }
-    }
-}
-
-enum DynamicStateAction {
-    Serialize,
-    Deserialize,
-}
-
-impl DynamicStateAction {
-    fn function_name(&self) -> &'static str {
-        match self {
-            DynamicStateAction::Serialize => SERIALIZE_STATE_FUNCTION_NAME,
-            DynamicStateAction::Deserialize => DESERIALIZE_STATE_FUNCTION_NAME,
         }
     }
 }
@@ -405,7 +388,8 @@ where
                 Task::none()
             }
             Message::SendReadySignal => {
-                self.dynamic_state_action(DynamicStateAction::Serialize)
+                self.serialize_state()
+                    .inspect_err(|e| log::error!("{}", e))
                     .ok();
                 self.update_channel
                     .0
@@ -417,8 +401,10 @@ where
                 match &self.reloader_state {
                     ReloaderState::Reloading(num) => {
                         if *num == 1 {
-                            self.dynamic_state_action(DynamicStateAction::Deserialize)
+                            self.deserialize_state()
+                                .inspect_err(|e| log::error!("{}", e))
                                 .ok();
+
                             self.reloader_state = ReloaderState::Ready;
                         } else {
                             self.reloader_state = ReloaderState::Reloading(num - 1);
@@ -431,9 +417,8 @@ where
                         )
                     }
                 }
-                Task::done(Message::None)
+                Task::none()
             }
-            Message::None => Task::none(),
         }
     }
 
@@ -465,19 +450,24 @@ where
                 )
                 .map(Message::AppMessage),
             ReloaderState::Reloading(_) => {
-                let content = sensor(Text::new("Reloading...").size(20))
-                    .key(self.sensor_key)
-                    .on_show(|_| Message::SendReadySignal);
+                let reloading_message = container(
+                    sensor(Text::new("Reloading...").size(20))
+                        .key(self.sensor_key)
+                        .on_show(|_| Message::SendReadySignal),
+                )
+                .center(Length::Fill);
 
-                with_default_theme(Element::from(content))
+                with_default_theme(Element::from(reloading_message))
             }
             ReloaderState::Error(error) => {
-                let error_text = Text::new(error.to_string()).size(20);
+                let error_text =
+                    container(Text::new(error.to_string()).size(20)).center(Length::Fill);
 
                 with_default_theme(Element::from(error_text))
             }
             ReloaderState::Compiling => {
-                let compilation_message = Text::new("Compiling...").size(20);
+                let compilation_message =
+                    container(Text::new("Compiling...").size(20)).center(Length::Fill);
 
                 with_default_theme(Element::from(compilation_message))
             }
@@ -672,6 +662,10 @@ where
                 .expect("Failed to get cargo metadata");
 
             let workspace_root = metadata.workspace_root.as_std_path();
+            info!(
+                "Working directory for build command: {}",
+                workspace_root.display()
+            );
 
             let result = Command::new("cargo")
                 .current_dir(workspace_root)
@@ -828,110 +822,109 @@ where
         })
     }
 
-    fn dynamic_state_action(&mut self, action: DynamicStateAction) -> Result<(), HotFunctionError> {
+    fn serialize_state(&mut self) -> Result<(), HotIceError> {
         let reloader = self
             .lib_reloader
             .as_ref()
             .expect("reloader not initialized");
 
         let Ok(reloader) = reloader.lock() else {
-            return Err(HotFunctionError::LockAcquisitionError);
+            return Err(HotIceError::LockAcquisitionError);
         };
 
-        match action {
-            DynamicStateAction::Serialize => {
-                if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
-                    let Ok(free_fn) = (unsafe {
-                        reloader.get_symbol::<fn(*mut u8, usize)>(
-                            FREE_SERIALIZED_DATA_FUNCTION_NAME.as_bytes(),
-                        )
-                    }) else {
-                        log::warn!("Failed to get free_serialized_data function");
-                        self.serialized_state_ptr = std::ptr::null_mut();
-                        self.serialized_state_len = 0;
-                        return Ok(());
-                    };
+        if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
+            let Ok(free_fn) = (unsafe {
+                reloader
+                    .get_symbol::<fn(*mut u8, usize)>(FREE_SERIALIZED_DATA_FUNCTION_NAME.as_bytes())
+            }) else {
+                log::warn!("Failed to get free_serialized_data function");
+                self.serialized_state_ptr = std::ptr::null_mut();
+                self.serialized_state_len = 0;
+                return Ok(());
+            };
 
-                    free_fn(self.serialized_state_ptr, self.serialized_state_len);
-                    self.serialized_state_ptr = std::ptr::null_mut();
-                    self.serialized_state_len = 0;
-                }
-
-                let Ok(serialize_fn) = (unsafe {
-                    reloader.get_symbol::<fn(&P::State, *mut *mut u8, *mut usize) -> Result<(), HotFunctionError>>(
-                        action.function_name().as_bytes(),
-                    )
-                }) else {
-                    log::info!("Failed to get state action function, assuming no dynamic state");
-                    return Err(HotFunctionError::FunctionNotFound(action.function_name()));
-                };
-
-                log::info!("state action: {}", action.function_name());
-                serialize_fn(
-                    &self.state,
-                    &mut self.serialized_state_ptr,
-                    &mut self.serialized_state_len,
-                )
-                .inspect_err(|e| log::error!("{e}"))?;
-
-                info!("Size of serialized state: {}", self.serialized_state_len);
-            }
-            DynamicStateAction::Deserialize => {
-                let Ok(deserialize_fn) = (unsafe {
-                    reloader.get_symbol::<fn(&mut P::State, *const u8, usize) -> Result<(), HotFunctionError>>(
-                        action.function_name().as_bytes(),
-                    )
-                }) else {
-                    log::info!("Failed to get state action function, assuming no dynamic state");
-                    return Err(HotFunctionError::FunctionNotFound(action.function_name()));
-                };
-
-                log::info!("size of serialized state: {}", self.serialized_state_len);
-                log::info!("state action: {}", action.function_name());
-                deserialize_fn(
-                    &mut self.state,
-                    self.serialized_state_ptr,
-                    self.serialized_state_len,
-                )
-                .inspect_err(|e| log::error!("Failed to deserialize state: {}", e))?;
-
-                // Free the memory after successful deserialization
-                if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
-                    let Ok(free_fn) = (unsafe {
-                        reloader.get_symbol::<fn(*mut u8, usize)>(
-                            FREE_SERIALIZED_DATA_FUNCTION_NAME.as_bytes(),
-                        )
-                    }) else {
-                        log::warn!("Failed to get free_serialized_data function");
-                        // Continue anyway
-                        self.serialized_state_ptr = std::ptr::null_mut();
-                        self.serialized_state_len = 0;
-                        return Ok(());
-                    };
-
-                    free_fn(self.serialized_state_ptr, self.serialized_state_len);
-                    self.serialized_state_ptr = std::ptr::null_mut();
-                    self.serialized_state_len = 0;
-                }
-            }
+            free_fn(self.serialized_state_ptr, self.serialized_state_len);
+            self.serialized_state_ptr = std::ptr::null_mut();
+            self.serialized_state_len = 0;
         }
+
+        let Ok(serialize_fn) = (unsafe {
+            reloader
+                .get_symbol::<fn(&P::State, *mut *mut u8, *mut usize) -> Result<(), HotIceError>>(
+                    SERIALIZE_STATE_FUNCTION_NAME.as_bytes(),
+                )
+        }) else {
+            return Err(HotIceError::FunctionNotFound(SERIALIZE_STATE_FUNCTION_NAME));
+        };
+
+        serialize_fn(
+            &self.state,
+            &mut self.serialized_state_ptr,
+            &mut self.serialized_state_len,
+        )?;
+
+        info!("Size of serialized state: {}", self.serialized_state_len);
+        Ok(())
+    }
+
+    fn deserialize_state(&mut self) -> Result<(), HotIceError> {
+        let reloader = self
+            .lib_reloader
+            .as_ref()
+            .expect("reloader not initialized");
+
+        let Ok(reloader) = reloader.lock() else {
+            return Err(HotIceError::LockAcquisitionError);
+        };
+
+        let Ok(deserialize_fn) = (unsafe {
+            reloader.get_symbol::<fn(&mut P::State, *const u8, usize) -> Result<(), HotIceError>>(
+                DESERIALIZE_STATE_FUNCTION_NAME.as_bytes(),
+            )
+        }) else {
+            return Err(HotIceError::FunctionNotFound(
+                DESERIALIZE_STATE_FUNCTION_NAME,
+            ));
+        };
+
+        deserialize_fn(
+            &mut self.state,
+            self.serialized_state_ptr,
+            self.serialized_state_len,
+        )?;
+
+        // Free the memory after successful deserialization
+        if !self.serialized_state_ptr.is_null() && self.serialized_state_len > 0 {
+            let Ok(free_fn) = (unsafe {
+                reloader
+                    .get_symbol::<fn(*mut u8, usize)>(FREE_SERIALIZED_DATA_FUNCTION_NAME.as_bytes())
+            }) else {
+                log::warn!("Failed to get free_serialized_data function");
+                // Continue anyway
+                self.serialized_state_ptr = std::ptr::null_mut();
+                self.serialized_state_len = 0;
+                return Ok(());
+            };
+
+            free_fn(self.serialized_state_ptr, self.serialized_state_len);
+            self.serialized_state_ptr = std::ptr::null_mut();
+            self.serialized_state_len = 0;
+        }
+
         Ok(())
     }
 }
 
-fn build_args(library_name: &str) -> [&str; 11] {
+fn build_args(library_name: &str) -> [&str; 8] {
     [
         "rustc",
         "--package",
         library_name,
         "--lib",
         "--crate-type",
-        "dylib",
+        "cdylib",
         "--profile",
         "dev",
-        "--",
-        "-C",
-        "link-arg=-Wl,--whole-archive",
     ]
 }
 

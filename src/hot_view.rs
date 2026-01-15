@@ -7,8 +7,7 @@ use std::{
 use iced_core::Element;
 
 use crate::{
-    error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
-    reloader::FunctionState,
+    error::HotIceError, lib_reloader::LibReloader, message::MessageSource, reloader::FunctionState,
 };
 
 pub trait IntoHotView<'a, State, Message, Theme, Renderer> {
@@ -19,7 +18,7 @@ pub trait IntoHotView<'a, State, Message, Theme, Renderer> {
         state: &'a State,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Element<'a, Message, Theme, Renderer>, HotFunctionError>;
+    ) -> Result<Element<'a, Message, Theme, Renderer>, HotIceError>;
 }
 
 impl<'a, T, C, State, Message, Theme, Renderer> IntoHotView<'a, State, Message, Theme, Renderer>
@@ -38,14 +37,14 @@ where
         state: &'a State,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Element<'a, Message, Theme, Renderer>, HotFunctionError> {
+    ) -> Result<Element<'a, Message, Theme, Renderer>, HotIceError> {
         let lib = reloader
             .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+            .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
             lib.get_symbol::<fn(&'a State) -> C>(function_name.as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+                .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
         Ok(function(state).into())
     }
@@ -91,8 +90,6 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Element<'a, MessageSource<Message>, Theme, Renderer> {
-        log::info!("Calling view()");
-
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self.function.static_view(state).map(MessageSource::Static);
@@ -104,6 +101,7 @@ where
                 element.map(MessageSource::Dynamic)
             }
             Err(err) => {
+                log::error!("view(): {}", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function.static_view(state).map(MessageSource::Static)
             }

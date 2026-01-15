@@ -7,7 +7,7 @@ use std::{
 
 use iced_core::window;
 
-use crate::{error::HotFunctionError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
 
 pub trait IntoHotTitle<State> {
     fn static_title(&self, state: &State, window: window::Id) -> String;
@@ -18,7 +18,7 @@ pub trait IntoHotTitle<State> {
         window: window::Id,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<String, HotFunctionError>;
+    ) -> Result<String, HotIceError>;
 }
 
 impl IntoHotTitle<()> for &'static str {
@@ -32,40 +32,40 @@ impl IntoHotTitle<()> for &'static str {
         _window: window::Id,
         _reloader: &Arc<Mutex<LibReloader>>,
         _function_name: &'static str,
-    ) -> Result<String, HotFunctionError> {
+    ) -> Result<String, HotIceError> {
         Ok(self.to_string())
     }
 }
 
 impl<T, State> IntoHotTitle<State> for T
 where
-    T: Fn(&State, window::Id) -> String,
+    T: Fn(&State) -> String,
 {
-    fn static_title(&self, state: &State, window: window::Id) -> String {
-        (self)(state, window)
+    fn static_title(&self, state: &State, _window: window::Id) -> String {
+        (self)(state)
     }
 
     fn hot_title(
         &self,
         state: &State,
-        window: window::Id,
+        _window: window::Id,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<String, HotFunctionError> {
+    ) -> Result<String, HotIceError> {
         let lib = reloader
             .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+            .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&State, window::Id) -> String>(function_name.as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+            lib.get_symbol::<fn(&State) -> String>(function_name.as_bytes())
+                .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state, window))) {
+        match catch_unwind(AssertUnwindSafe(|| function(state))) {
             Ok(title) => Ok(title),
             Err(err) => {
                 std::mem::forget(err);
-                Err(HotFunctionError::FunctionPaniced(function_name))
+                Err(HotIceError::FunctionPaniced(function_name))
             }
         }
     }
@@ -100,8 +100,6 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> String {
-        log::info!("Calling title()");
-
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self.function.static_title(state, window);
@@ -116,6 +114,7 @@ where
                 title
             }
             Err(err) => {
+                log::error!("hot_title(): {}", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function.static_title(state, window)
             }

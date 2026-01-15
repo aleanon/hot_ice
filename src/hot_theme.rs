@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{error::HotFunctionError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
 
 pub trait IntoHotTheme<State, Theme> {
     fn static_theme(&self, state: &State) -> Option<Theme>;
@@ -15,7 +15,7 @@ pub trait IntoHotTheme<State, Theme> {
         state: &State,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Option<Theme>, HotFunctionError>;
+    ) -> Result<Option<Theme>, HotIceError>;
 }
 
 impl<T, C, State, Theme> IntoHotTheme<State, Theme> for T
@@ -32,21 +32,21 @@ where
         state: &State,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Option<Theme>, HotFunctionError> {
+    ) -> Result<Option<Theme>, HotIceError> {
         let lib = reloader
             .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+            .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
             lib.get_symbol::<fn(&State) -> C>(function_name.as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+                .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
         match catch_unwind(AssertUnwindSafe(|| function(state))) {
             Ok(theme) => Ok(theme.into()),
             Err(err) => {
                 std::mem::forget(err);
-                Err(HotFunctionError::FunctionPaniced(function_name))
+                Err(HotIceError::FunctionPaniced(function_name))
             }
         }
     }
@@ -82,8 +82,6 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Option<Theme> {
-        log::info!("Calling theme()");
-
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self.function.static_theme(state);
@@ -95,6 +93,7 @@ where
                 theme
             }
             Err(err) => {
+                log::error!("theme(): {}", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function.static_theme(state)
             }

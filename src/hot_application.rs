@@ -8,7 +8,7 @@ use iced_futures::Executor;
 use iced_winit::{Error, runtime::Task};
 
 use crate::{
-    DynMessage, boot,
+    boot,
     hot_program::{self, HotProgram},
     hot_scale_factor::IntoHotScaleFactor,
     hot_style::IntoHotStyle,
@@ -18,11 +18,12 @@ use crate::{
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
+    message::DynMessage,
     message::MessageSource,
     reloader::{FunctionState, Reload, ReloaderSettings},
 };
 
-pub fn hot_application<State, Message, Theme, Renderer>(
+pub fn application<State, Message, Theme, Renderer>(
     boot: impl boot::Boot<State, Message>,
     update: impl hot_update::IntoHotUpdate<State, Message>,
     view: impl for<'a> hot_view::IntoHotView<'a, State, Message, Theme, Renderer>,

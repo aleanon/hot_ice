@@ -7,7 +7,7 @@ use std::{
 
 use iced_core::window;
 
-use crate::{error::HotFunctionError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
 
 pub trait IntoHotScaleFactor<State> {
     fn static_scale_factor(&self, state: &State, window: window::Id) -> f32;
@@ -18,38 +18,38 @@ pub trait IntoHotScaleFactor<State> {
         window: window::Id,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<f32, HotFunctionError>;
+    ) -> Result<f32, HotIceError>;
 }
 
 impl<T, State> IntoHotScaleFactor<State> for T
 where
-    T: Fn(&State, window::Id) -> f32,
+    T: Fn(&State) -> f32,
 {
-    fn static_scale_factor(&self, state: &State, window: window::Id) -> f32 {
-        (self)(state, window)
+    fn static_scale_factor(&self, state: &State, _window: window::Id) -> f32 {
+        (self)(state)
     }
 
     fn hot_scale_factor(
         &self,
         state: &State,
-        window: window::Id,
+        _window: window::Id,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<f32, HotFunctionError> {
+    ) -> Result<f32, HotIceError> {
         let lib = reloader
             .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+            .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&State, window::Id) -> f32>(function_name.as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+            lib.get_symbol::<fn(&State) -> f32>(function_name.as_bytes())
+                .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state, window))) {
+        match catch_unwind(AssertUnwindSafe(|| function(state))) {
             Ok(scale_factor) => Ok(scale_factor),
             Err(err) => {
                 std::mem::forget(err);
-                Err(HotFunctionError::FunctionPaniced(function_name))
+                Err(HotIceError::FunctionPaniced(function_name))
             }
         }
     }
@@ -84,8 +84,6 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> f32 {
-        log::info!("Calling scale_factor()");
-
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self.function.static_scale_factor(state, window);
@@ -100,6 +98,7 @@ where
                 scale_factor
             }
             Err(err) => {
+                log::error!("scale_factor(): {}", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function.static_scale_factor(state, window)
             }

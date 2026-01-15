@@ -1,7 +1,7 @@
 use serde::{Serialize, de::DeserializeOwned};
 use std::any::Any;
 
-use crate::HotFunctionError;
+use crate::error::HotIceError;
 
 pub trait DynState: Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
@@ -22,7 +22,7 @@ where
     }
 
     fn serialize_state(&self) -> Result<Vec<u8>, String> {
-        rmp_serde::to_vec(self).map_err(|e| e.to_string())
+        serde_json::to_vec(self).map_err(|e| e.to_string())
     }
 }
 
@@ -48,35 +48,44 @@ impl HotState {
         unsafe { self.state.as_any().downcast_unchecked_ref::<T>() }
     }
 
-    pub fn serialize_state<T>(&self) -> Result<Vec<u8>, HotFunctionError>
+    pub fn serialize_state<T>(&self) -> Result<Vec<u8>, HotIceError>
     where
         T: DynState + Serialize + 'static,
     {
         let serialized = self
             .state
             .serialize_state()
-            .map_err(|_| HotFunctionError::FailedToSerializeState)?;
+            .map_err(HotIceError::FailedToSerializeState)?;
 
         Ok(serialized)
     }
 
-    pub fn deserialize_state<T>(&mut self, data: &[u8]) -> Result<(), HotFunctionError>
+    pub fn deserialize_state<T>(&mut self, data: &[u8]) -> Result<(), HotIceError>
     where
         T: DynState + DeserializeOwned + 'static + Default,
     {
+        let mut result = Ok(());
         let new_state: T = if data.is_empty() {
+            result = Err(HotIceError::FailedToDeserializeState(
+                "Empty data".to_string(),
+            ));
             T::default()
         } else {
-            match rmp_serde::from_slice(data) {
+            match serde_json::from_slice(data) {
                 Ok(state) => state,
-                Err(_) => T::default(),
+                Err(e) => {
+                    result = Err(HotIceError::FailedToDeserializeState(e.to_string()));
+                    T::default()
+                }
             }
         };
 
         let old_state = std::mem::replace(&mut self.state, Box::new(new_state));
 
+        // we leak this here because we have the pointers to this memory in the reloader,
+        // it's manually freed later
         std::mem::forget(old_state);
 
-        Ok(())
+        result
     }
 }

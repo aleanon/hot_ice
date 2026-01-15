@@ -12,7 +12,6 @@ use iced_futures::{Executor, Subscription};
 use iced_winit::graphics::compositor;
 use iced_winit::runtime::Task;
 
-use crate::DynMessage;
 use crate::hot_scale_factor::HotScaleFactor;
 use crate::hot_scale_factor::IntoHotScaleFactor;
 use crate::hot_style::HotStyle;
@@ -24,6 +23,7 @@ use crate::hot_theme::IntoHotTheme;
 use crate::hot_title::HotTitle;
 use crate::hot_title::IntoHotTitle;
 use crate::lib_reloader::LibReloader;
+use crate::message::DynMessage;
 use crate::message::MessageSource;
 use crate::reloader::FunctionState;
 

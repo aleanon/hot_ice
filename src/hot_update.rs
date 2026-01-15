@@ -8,22 +8,22 @@ use std::{
 use iced_winit::runtime::Task;
 
 use crate::{
-    DynMessage, error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
+    error::HotIceError, lib_reloader::LibReloader, message::DynMessage, message::MessageSource,
     reloader::FunctionState,
 };
 
 trait IntoResult<Message> {
-    fn into_result(self) -> Result<Task<Message>, HotFunctionError>;
+    fn into_result(self) -> Result<Task<Message>, HotIceError>;
 }
 
 impl<Message> IntoResult<Message> for Task<Message> {
-    fn into_result(self) -> Result<Task<Message>, HotFunctionError> {
+    fn into_result(self) -> Result<Task<Message>, HotIceError> {
         Ok(self)
     }
 }
 
-impl<Message> IntoResult<Message> for Result<Task<Message>, HotFunctionError> {
-    fn into_result(self) -> Result<Task<Message>, HotFunctionError> {
+impl<Message> IntoResult<Message> for Result<Task<Message>, HotIceError> {
+    fn into_result(self) -> Result<Task<Message>, HotIceError> {
         self
     }
 }
@@ -33,7 +33,7 @@ pub trait IntoHotUpdate<State, Message> {
         &self,
         state: &mut State,
         message: Message,
-    ) -> Result<Task<Message>, HotFunctionError>;
+    ) -> Result<Task<Message>, HotIceError>;
 
     fn hot_update(
         &self,
@@ -41,7 +41,7 @@ pub trait IntoHotUpdate<State, Message> {
         message: Message,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Task<Message>, HotFunctionError>;
+    ) -> Result<Task<Message>, HotIceError>;
 }
 
 impl<T, C, State, Message> IntoHotUpdate<State, Message> for T
@@ -55,7 +55,7 @@ where
         &self,
         state: &mut State,
         message: Message,
-    ) -> Result<Task<Message>, HotFunctionError> {
+    ) -> Result<Task<Message>, HotIceError> {
         (self)(state, message).into_result()
     }
 
@@ -65,21 +65,21 @@ where
         message: Message,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Task<Message>, HotFunctionError> {
+    ) -> Result<Task<Message>, HotIceError> {
         let lib = reloader
             .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+            .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
             lib.get_symbol::<fn(&mut State, Message) -> C>(function_name.as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+                .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
         match catch_unwind(AssertUnwindSafe(|| function(state, message))) {
             Ok(sub) => sub.into_result(),
             Err(err) => {
                 std::mem::forget(err);
-                Err(HotFunctionError::FunctionPaniced(function_name))
+                Err(HotIceError::FunctionPaniced(function_name))
             }
         }
     }
@@ -144,8 +144,6 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Task<MessageSource<Message>> {
-        log::info!("Calling update()");
-
         match message {
             MessageSource::Static(message) => {
                 self.run_static(state, message, fn_state, FunctionState::Static)
@@ -163,12 +161,15 @@ where
                         *fn_state = FunctionState::Hot;
                         task.map(MessageSource::Dynamic)
                     }
-                    Err(err) => self.run_static(
-                        state,
-                        message,
-                        fn_state,
-                        FunctionState::FallBackStatic(err.to_string()),
-                    ),
+                    Err(err) => {
+                        log::error!("update():{}", err);
+                        self.run_static(
+                            state,
+                            message,
+                            fn_state,
+                            FunctionState::FallBackStatic(err.to_string()),
+                        )
+                    }
                 }
             }
         }

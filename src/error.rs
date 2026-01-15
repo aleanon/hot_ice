@@ -10,7 +10,7 @@ pub enum HotReloaderError {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum HotFunctionError {
+pub enum HotIceError {
     #[error("Could not find function library")]
     LibraryNotFound,
     #[error("Could not load function: {0}")]
@@ -23,16 +23,16 @@ pub enum HotFunctionError {
     MessageDowncastError(String),
     #[error("State type mismatch")]
     StateTypeMismatch,
-    #[error("Failed to serialize state")]
-    FailedToSerializeState,
+    #[error("Failed to serialize state: {0}")]
+    FailedToSerializeState(String),
     #[error("Failed to deserialize state: {0}")]
     FailedToDeserializeState(String),
     #[error("Failed to acquire lock on state")]
     StateLockAcquisitionError,
 }
 
-impl<T> From<std::sync::PoisonError<T>> for HotFunctionError {
+impl<T> From<std::sync::PoisonError<T>> for HotIceError {
     fn from(_: std::sync::PoisonError<T>) -> Self {
-        HotFunctionError::StateLockAcquisitionError
+        HotIceError::StateLockAcquisitionError
     }
 }

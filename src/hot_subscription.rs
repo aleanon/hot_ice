@@ -8,8 +8,7 @@ use std::{
 use iced_futures::Subscription;
 
 use crate::{
-    error::HotFunctionError, lib_reloader::LibReloader, message::MessageSource,
-    reloader::FunctionState,
+    error::HotIceError, lib_reloader::LibReloader, message::MessageSource, reloader::FunctionState,
 };
 
 pub trait IntoHotSubscription<State, Message> {
@@ -20,7 +19,7 @@ pub trait IntoHotSubscription<State, Message> {
         state: &State,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Subscription<Message>, HotFunctionError>;
+    ) -> Result<Subscription<Message>, HotIceError>;
 }
 
 impl<T, C, State, Message> IntoHotSubscription<State, Message> for T
@@ -38,21 +37,21 @@ where
         state: &State,
         reloader: &Arc<Mutex<LibReloader>>,
         function_name: &'static str,
-    ) -> Result<Subscription<Message>, HotFunctionError> {
+    ) -> Result<Subscription<Message>, HotIceError> {
         let lib = reloader
             .try_lock()
-            .map_err(|_| HotFunctionError::LockAcquisitionError)?;
+            .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
             lib.get_symbol::<fn(&State) -> C>(function_name.as_bytes())
-                .map_err(|_| HotFunctionError::FunctionNotFound(function_name))?
+                .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
         match catch_unwind(AssertUnwindSafe(|| function(state))) {
             Ok(sub) => Ok(sub.into()),
             Err(err) => {
                 std::mem::forget(err);
-                Err(HotFunctionError::FunctionPaniced(function_name))
+                Err(HotIceError::FunctionPaniced(function_name))
             }
         }
     }
@@ -89,8 +88,6 @@ where
         fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Subscription<MessageSource<Message>> {
-        log::info!("Calling subscription()");
-
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
             return self
@@ -108,6 +105,7 @@ where
                 task.map(MessageSource::Dynamic)
             }
             Err(err) => {
+                log::error!("subscription(): {}", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
                 self.function
                     .static_subscription(state)

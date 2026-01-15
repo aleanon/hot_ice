@@ -1,6 +1,6 @@
 use iced_winit::runtime::Task;
 
-use crate::DynMessage;
+use crate::message::DynMessage;
 
 /// The logic to initialize the `State` of some [`Application`].
 ///
