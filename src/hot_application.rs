@@ -143,12 +143,15 @@ where
     P::Message: Clone,
 {
     pub fn run(self) -> Result<(), Error> {
+        let fonts = self.settings.fonts.clone();
+
         let program = Reload::new(
             self.program,
             self.reloader_settings,
             self.settings,
             self.window,
             self.lib_name,
+            fonts,
         );
 
         #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]

@@ -1,3 +1,4 @@
+use hot_ice_common::LOAD_FONT_FUNCTION_NAME;
 use quote::{quote, quote_spanned};
 use syn::{
     Ident, Token,
@@ -433,6 +434,28 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
     // Extract and transform the return type to use HotMessage
     let transformed_return_type = transform_element_return_type(&input.sig.output);
 
+    let load_font_ident =
+        proc_macro2::Ident::new(LOAD_FONT_FUNCTION_NAME, proc_macro2::Span::call_site());
+
+    let load_font_fn = quote! {
+        /// Load a font into the library's font system
+        /// This is needed because each dynamically loaded library has its own static FONT_SYSTEM
+        #[unsafe(no_mangle)]
+        pub fn #load_font_ident(font_ptr: *const ::core::primitive::u8, font_len: ::core::primitive::usize) {
+            if font_ptr.is_null() || font_len == 0 {
+                return;
+            }
+
+            let font_bytes = unsafe { ::core::slice::from_raw_parts(font_ptr, font_len) };
+
+            // Get the font system and load the font
+            let font_system = hot_ice::iced_graphics::text::font_system();
+            if let ::core::result::Result::Ok(mut system) = font_system.write() {
+                system.load_font(::std::borrow::Cow::Borrowed(font_bytes));
+            }
+        }
+    };
+
     let expanded = if hot_state {
         quote! {
             #[unsafe(no_mangle)]
@@ -442,6 +465,8 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
             }
 
             #input
+
+            #load_font_fn
         }
     } else {
         quote! {
@@ -452,6 +477,8 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
             }
 
             #input
+
+            #load_font_fn
         }
     };
 

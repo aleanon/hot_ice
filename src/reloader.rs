@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::Debug,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -72,6 +73,7 @@ where
     settings: Settings,
     window_settings: window::Settings,
     lib_name: &'static str,
+    fonts: Vec<Cow<'static, [u8]>>,
 }
 
 impl<P> Reload<P>
@@ -85,6 +87,7 @@ where
         settings: Settings,
         window_settings: window::Settings,
         lib_name: &'static str,
+        fonts: Vec<Cow<'static, [u8]>>,
     ) -> Self {
         Self {
             program,
@@ -92,6 +95,7 @@ where
             settings,
             window_settings,
             lib_name,
+            fonts,
         }
     }
 }
@@ -112,7 +116,12 @@ where
     }
 
     fn boot(&self) -> (Self::State, Task<Self::Message>) {
-        Reloader::new(&self.program, &self.reloader_settings, &self.lib_name)
+        Reloader::new(
+            &self.program,
+            &self.reloader_settings,
+            &self.lib_name,
+            self.fonts.clone(),
+        )
     }
 
     fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
@@ -242,6 +251,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     scale_factor_fn_state: Mutex<FunctionState>,
     title_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
+    loaded_fonts: Vec<Cow<'static, [u8]>>,
 }
 
 impl<'a, P> Reloader<P>
@@ -253,6 +263,7 @@ where
         program: &P,
         reloader_settings: &ReloaderSettings,
         lib_name: &'static str,
+        fonts: Vec<Cow<'static, [u8]>>,
     ) -> (Self, Task<Message<P>>) {
         let (state, program_task) = program.boot();
 
@@ -272,6 +283,7 @@ where
             scale_factor_fn_state: Mutex::new(FunctionState::Static),
             title_fn_state: Mutex::new(FunctionState::Static),
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
+            loaded_fonts: fonts,
         };
 
         let task = if reloader_settings.compile_in_reloader {
@@ -404,6 +416,9 @@ where
                             self.deserialize_state()
                                 .inspect_err(|e| log::error!("{}", e))
                                 .ok();
+
+                            // Sync fonts to the newly loaded library
+                            self.sync_fonts_to_library();
 
                             self.reloader_state = ReloaderState::Ready;
                         } else {
@@ -912,6 +927,53 @@ where
         }
 
         Ok(())
+    }
+
+    /// Sync all tracked fonts to the loaded library's font system
+    fn sync_fonts_to_library(&self) {
+        log::info!(
+            "sync_fonts_to_library called with {} fonts",
+            self.loaded_fonts.len()
+        );
+
+        let Some(lib_reloader) = &self.lib_reloader else {
+            log::warn!("lib_reloader is None");
+            return;
+        };
+
+        let Ok(reloader) = lib_reloader.lock() else {
+            log::error!("Failed to acquire lock on lib_reloader");
+            return;
+        };
+
+        log::info!("Attempting to get font loading function symbol");
+
+        // Get the font loading function from the library
+        let Ok(load_font_fn) = (unsafe {
+            reloader.get_symbol::<fn(*const u8, usize)>(
+                hot_ice_common::LOAD_FONT_FUNCTION_NAME.as_bytes(),
+            )
+        }) else {
+            log::warn!(
+                "Font loading function not found in library. Function name: {}",
+                hot_ice_common::LOAD_FONT_FUNCTION_NAME
+            );
+            return;
+        };
+
+        log::info!(
+            "Font loading function found, loading {} fonts",
+            self.loaded_fonts.len()
+        );
+
+        // Load each tracked font into the library
+        for (i, font_cow) in self.loaded_fonts.iter().enumerate() {
+            let font_bytes: &[u8] = font_cow.as_ref();
+            log::info!("Loading font {} with {} bytes", i, font_bytes.len());
+            load_font_fn(font_bytes.as_ptr(), font_bytes.len());
+        }
+
+        log::info!("Synced {} fonts to loaded library", self.loaded_fonts.len());
     }
 }
 

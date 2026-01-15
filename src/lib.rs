@@ -20,6 +20,7 @@ mod reloader;
 
 //Re-export
 pub use iced;
+pub use iced_graphics;
 pub use serde;
 pub use serde_derive;
 
