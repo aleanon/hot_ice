@@ -1,6 +1,5 @@
 use hot_ice::iced::widget::{column, container, pick_list, row, slider, text};
 use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum Message {

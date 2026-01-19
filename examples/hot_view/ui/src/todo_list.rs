@@ -1,6 +1,5 @@
 use hot_ice::iced::widget::{button, checkbox, column, container, row, text, text_input};
 use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum Message {

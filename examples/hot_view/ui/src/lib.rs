@@ -1,130 +1,89 @@
-use hot_ice::iced::widget::{button, checkbox, column, container, row, space, text, text_input};
+use hot_ice::iced::widget::{column, container, row, text};
 use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
+
+pub mod counter;
+pub mod settings;
+pub mod todo_list;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    InputChanged(String),
-    AddTodo,
-    ToggleTodo(usize),
-    DeleteTodo(usize),
-}
-
-#[derive(Debug, Clone)]
-pub struct TodoItem {
-    text: String,
-    completed: bool,
+    Counter(counter::Message),
+    TodoList(todo_list::Message),
+    Settings(settings::Message),
 }
 
 #[derive(Debug, Clone)]
 pub struct State {
-    input: String,
-    todos: Vec<TodoItem>,
+    counter: counter::State,
+    todo_list: todo_list::State,
+    settings: settings::State,
 }
 
 impl State {
-    #[hot_ice::hot_fn]
     pub fn boot() -> (State, Task<Message>) {
+        let (counter, counter_task) = counter::State::boot();
+        let (todo_list, todo_task) = todo_list::State::boot();
+        let (settings, settings_task) = settings::State::boot();
+
         (
             State {
-                input: String::new(),
-                todos: vec![
-                    TodoItem {
-                        text: "Learn hot_ice".to_string(),
-                        completed: false,
-                    },
-                    TodoItem {
-                        text: "Build something cool".to_string(),
-                        completed: false,
-                    },
-                ],
+                counter,
+                todo_list,
+                settings,
             },
-            Task::none(),
+            Task::batch([
+                counter_task.map(Message::Counter),
+                todo_task.map(Message::TodoList),
+                settings_task.map(Message::Settings),
+            ]),
         )
     }
 
-    #[hot_ice::hot_fn]
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::InputChanged(value) => {
-                self.input = value;
-            }
-            Message::AddTodo => {
-                if !self.input.trim().is_empty() {
-                    self.todos.push(TodoItem {
-                        text: self.input.clone(),
-                        completed: false,
-                    });
-                    self.input.clear();
-                }
-            }
-            Message::ToggleTodo(index) => {
-                if let Some(todo) = self.todos.get_mut(index) {
-                    todo.completed = !todo.completed;
-                }
-            }
-            Message::DeleteTodo(index) => {
-                if index < self.todos.len() {
-                    self.todos.remove(index);
-                }
-            }
+            Message::Counter(msg) => self.counter.update(msg).map(Message::Counter),
+            Message::TodoList(msg) => self.todo_list.update(msg).map(Message::TodoList),
+            Message::Settings(msg) => self.settings.update(msg).map(Message::Settings),
         }
-
-        Task::none()
     }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(cold_message)]
     pub fn view(&self) -> Element<'_, Message> {
-        let input_row = row![
-            text_input("Add a todo...", &self.input)
-                .on_input(Message::InputChanged)
-                .on_submit(Message::AddTodo)
-                .padding(10),
-            button("Add").on_press(Message::AddTodo).padding(10),
-        ]
-        .spacing(10);
-
-        let mut todo_column = column![text("Todo List").size(24), input_row].spacing(10);
-
-        for (index, todo) in self.todos.iter().enumerate() {
-            let todo_row = row![
-                checkbox(todo.completed).on_toggle(move |_| Message::ToggleTodo(index)),
-                text(&todo.text).size(16),
-                button("Delete")
-                    .on_press(Message::DeleteTodo(index))
-                    .padding(5),
+        let content = column![
+            text("Hot State Example").size(34),
+            text("This demonstrates nested state with hot reloading").size(16),
+            row![
+                container(self.counter.view().map(Message::Counter))
+                    .padding(20)
+                    .width(Length::Fill),
+                container(self.todo_list.view().map(Message::TodoList))
+                    .padding(20)
+                    .width(Length::Fill),
             ]
-            .spacing(10)
-            .align_y(hot_ice::iced::Alignment::Center);
+            .spacing(20),
+            container(self.settings.view().map(Message::Settings))
+                .padding(20)
+                .width(Length::Fill),
+        ]
+        .spacing(20)
+        .padding(20);
 
-            todo_column = todo_column.push(todo_row);
-        }
-
-        let completed_count = self.todos.iter().filter(|t| t.completed).count();
-        let stats = text(format!(
-            "{}/{} completed",
-            completed_count,
-            self.todos.len()
-        ))
-        .size(12);
-
-        todo_column = todo_column.push(stats);
-
-        let content = row![
-            space().width(Length::Fill),
-            todo_column,
-            space().width(Length::Fill)
-        ];
-
-        container(content).center(Length::Fill).into()
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
-    #[hot_ice::hot_fn]
     pub fn subscription(&self) -> Subscription<Message> {
-        Subscription::none()
+        Subscription::batch([
+            self.counter.subscription().map(Message::Counter),
+            self.todo_list.subscription().map(Message::TodoList),
+            self.settings.subscription().map(Message::Settings),
+        ])
     }
 
-    pub fn theme(&self) -> Theme {
-        Theme::Dark
+    pub fn theme(&self) -> Option<Theme> {
+        Some(self.settings.theme())
     }
 
     pub fn style(&self, theme: &Theme) -> theme::Style {
@@ -132,10 +91,10 @@ impl State {
     }
 
     pub fn scale_factor(&self) -> f32 {
-        1.0
+        self.settings.scale_factor()
     }
 
     pub fn title(&self) -> String {
-        format!("Todo List: {} items", self.todos.len())
+        format!("Hot State Example - Counter: {}", self.counter.value())
     }
 }

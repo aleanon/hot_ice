@@ -73,16 +73,18 @@ pub fn hot_fn(
 
     let hot_state = args.hot_state;
 
-    // For subscription, also check for not_hot/not-hot (legacy support)
+    // For subscription/update, also check for not_hot/not-hot (legacy support)
     let attr_str = attr.to_string();
     let is_hot = !attr_str.contains("not_hot") && !attr_str.contains("not-hot");
+    // For view, check for cold-message/cold_message
+    let cold_message = attr_str.contains("cold-message") || attr_str.contains("cold_message");
 
     let fn_type = detect_fn_type(&input);
 
     let generated_code = match fn_type {
         FnType::Boot => boot(hot_state, item),
-        FnType::Update => update(hot_state, item),
-        FnType::View => view(hot_state, item),
+        FnType::Update => update(hot_state, is_hot, item),
+        FnType::View => view(hot_state, cold_message, item),
         FnType::Subscription => subscription(hot_state, is_hot, item),
         FnType::Theme => theme(hot_state, item),
         FnType::Style => style(hot_state, item),
@@ -367,7 +369,7 @@ fn transform_element_type(ty: &syn::Type) -> syn::Type {
     }
 }
 
-fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+fn update(hot_state: bool, is_hot: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
@@ -377,9 +379,15 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
 
     let vis = &input.vis;
 
+    let no_mangle_attr = if is_hot {
+        quote! { #[unsafe(no_mangle)] }
+    } else {
+        quote! {}
+    };
+
     let expanded = if hot_state {
         quote! {
-            #[unsafe(no_mangle)]
+            #no_mangle_attr
             #vis fn #original_fn_name(
                 state: &mut hot_ice::macro_use::HotState,
                 message: hot_ice::macro_use::HotMessage,
@@ -397,7 +405,7 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
         }
     } else {
         quote! {
-            #[unsafe(no_mangle)]
+            #no_mangle_attr
             #vis fn #original_fn_name(
                 &mut self,
                 message: hot_ice::macro_use::HotMessage,
@@ -417,7 +425,11 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
     proc_macro::TokenStream::from(expanded)
 }
 
-fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+fn view(
+    hot_state: bool,
+    cold_message: bool,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
@@ -427,8 +439,14 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
 
     let vis = &input.vis;
 
-    // Extract and transform the return type to use HotMessage
-    let transformed_return_type = transform_element_return_type(&input.sig.output);
+    // If cold_message is set, keep the original return type; otherwise transform to HotMessage
+    let return_type = if cold_message {
+        let rt = &input.sig.output;
+        quote! { #rt }
+    } else {
+        let transformed = transform_element_return_type(&input.sig.output);
+        quote! { #transformed }
+    };
 
     let load_font_ident =
         proc_macro2::Ident::new(LOAD_FONT_FUNCTION_NAME, proc_macro2::Span::call_site());
@@ -452,29 +470,56 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
         }
     };
 
+    // If cold_message is set, don't map to HotMessage
     let expanded = if hot_state {
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) #transformed_return_type {
-                Self::#inner_fn_ident(state.ref_state())
-                    .map(hot_ice::macro_use::DynMessage::into_hot_message)
+        if cold_message {
+            quote! {
+                #[unsafe(no_mangle)]
+                #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) #return_type {
+                    Self::#inner_fn_ident(state.ref_state())
+                }
+
+                #input
+
+                #load_font_fn
             }
+        } else {
+            quote! {
+                #[unsafe(no_mangle)]
+                #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) #return_type {
+                    Self::#inner_fn_ident(state.ref_state())
+                        .map(hot_ice::macro_use::DynMessage::into_hot_message)
+                }
 
-            #input
+                #input
 
-            #load_font_fn
+                #load_font_fn
+            }
         }
     } else {
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(&self) #transformed_return_type {
-                self.#inner_fn_ident()
-                    .map(hot_ice::macro_use::DynMessage::into_hot_message)
+        if cold_message {
+            quote! {
+                #[unsafe(no_mangle)]
+                #vis fn #original_fn_name(&self) #return_type {
+                    self.#inner_fn_ident()
+                }
+
+                #input
+
+                #load_font_fn
             }
+        } else {
+            quote! {
+                #[unsafe(no_mangle)]
+                #vis fn #original_fn_name(&self) #return_type {
+                    self.#inner_fn_ident()
+                        .map(hot_ice::macro_use::DynMessage::into_hot_message)
+                }
 
-            #input
+                #input
 
-            #load_font_fn
+                #load_font_fn
+            }
         }
     };
 
