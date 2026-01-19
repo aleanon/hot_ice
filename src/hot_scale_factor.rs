@@ -1,16 +1,17 @@
 use std::{
     any::type_name,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
 use iced_core::window;
 
-use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{
+    error::HotIceError, into_result::IntoResult, lib_reloader::LibReloader, reloader::FunctionState,
+};
 
 pub trait IntoHotScaleFactor<State> {
-    fn static_scale_factor(&self, state: &State, window: window::Id) -> f32;
+    fn static_scale_factor(&self, state: &State, window: window::Id) -> Result<f32, HotIceError>;
 
     fn hot_scale_factor(
         &self,
@@ -21,12 +22,13 @@ pub trait IntoHotScaleFactor<State> {
     ) -> Result<f32, HotIceError>;
 }
 
-impl<T, State> IntoHotScaleFactor<State> for T
+impl<C, T, State> IntoHotScaleFactor<State> for T
 where
-    T: Fn(&State) -> f32,
+    T: Fn(&State) -> C,
+    C: IntoResult<f32>,
 {
-    fn static_scale_factor(&self, state: &State, _window: window::Id) -> f32 {
-        (self)(state)
+    fn static_scale_factor(&self, state: &State, _window: window::Id) -> Result<f32, HotIceError> {
+        (self)(state).into_result()
     }
 
     fn hot_scale_factor(
@@ -41,17 +43,11 @@ where
             .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&State) -> f32>(function_name.as_bytes())
+            lib.get_symbol::<fn(&State) -> C>(function_name.as_bytes())
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state))) {
-            Ok(scale_factor) => Ok(scale_factor),
-            Err(err) => {
-                std::mem::forget(err);
-                Err(HotIceError::FunctionPaniced(function_name))
-            }
-        }
+        function(state).into_result()
     }
 }
 
@@ -86,7 +82,13 @@ where
     ) -> f32 {
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
-            return self.function.static_scale_factor(state, window);
+            return match self.function.static_scale_factor(state, window) {
+                Ok(scale_factor) => scale_factor,
+                Err(err) => {
+                    *fn_state = FunctionState::Error(err.to_string());
+                    1.0
+                }
+            };
         };
 
         match self
@@ -98,9 +100,9 @@ where
                 scale_factor
             }
             Err(err) => {
-                log::error!("scale_factor(): {}", err);
+                log::error!("{}\nFallback to scale factor 1.0", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
-                self.function.static_scale_factor(state, window)
+                1.0
             }
         }
     }

@@ -31,7 +31,7 @@ pub fn application<State, Message, Theme, Renderer>(
 where
     State: 'static,
     Message: DynMessage + Clone,
-    Theme: theme::Base,
+    Theme: theme::Base + iced_widget::container::Catalog + iced_widget::text::Catalog,
     Renderer: hot_program::Renderer,
 {
     let hot_view = HotView::new(view);
@@ -57,7 +57,7 @@ where
     where
         State: 'static,
         Message: DynMessage + Clone,
-        Theme: theme::Base,
+        Theme: theme::Base + iced_widget::container::Catalog + iced_widget::text::Catalog,
         Renderer: hot_program::Renderer,
         Boot: boot::Boot<State, Message>,
         Update: hot_update::IntoHotUpdate<State, Message>,

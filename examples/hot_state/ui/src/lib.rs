@@ -1,5 +1,5 @@
 use hot_ice::iced::widget::{column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
+use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
 
 pub mod counter;
 pub mod settings;

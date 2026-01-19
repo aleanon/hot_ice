@@ -1,18 +1,18 @@
 use std::{
     any::type_name,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
 use iced_futures::Subscription;
 
 use crate::{
-    error::HotIceError, lib_reloader::LibReloader, message::MessageSource, reloader::FunctionState,
+    error::HotIceError, into_result::IntoResult, lib_reloader::LibReloader, message::MessageSource,
+    reloader::FunctionState,
 };
 
 pub trait IntoHotSubscription<State, Message> {
-    fn static_subscription(&self, state: &State) -> Subscription<Message>;
+    fn static_subscription(&self, state: &State) -> Result<Subscription<Message>, HotIceError>;
 
     fn hot_subscription(
         &self,
@@ -25,11 +25,11 @@ pub trait IntoHotSubscription<State, Message> {
 impl<T, C, State, Message> IntoHotSubscription<State, Message> for T
 where
     T: Fn(&State) -> C,
-    C: Into<Subscription<Message>>,
+    C: IntoResult<Subscription<Message>>,
     Message: Send + 'static,
 {
-    fn static_subscription(&self, state: &State) -> Subscription<Message> {
-        (self)(state).into()
+    fn static_subscription(&self, state: &State) -> Result<Subscription<Message>, HotIceError> {
+        (self)(state).into_result()
     }
 
     fn hot_subscription(
@@ -47,13 +47,7 @@ where
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state))) {
-            Ok(sub) => Ok(sub.into()),
-            Err(err) => {
-                std::mem::forget(err);
-                Err(HotIceError::FunctionPaniced(function_name))
-            }
-        }
+        function(state).into_result()
     }
 }
 
@@ -90,10 +84,13 @@ where
     ) -> Subscription<MessageSource<Message>> {
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
-            return self
-                .function
-                .static_subscription(state)
-                .map(MessageSource::Static);
+            return match self.function.static_subscription(state) {
+                Ok(sub) => sub.map(MessageSource::Static),
+                Err(err) => {
+                    *fn_state = FunctionState::Error(err.to_string());
+                    Subscription::none()
+                }
+            };
         };
 
         match self
@@ -105,11 +102,9 @@ where
                 task.map(MessageSource::Dynamic)
             }
             Err(err) => {
-                log::error!("subscription(): {}", err);
+                log::error!("{}\nFallback to empty subscription", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
-                self.function
-                    .static_subscription(state)
-                    .map(MessageSource::Static)
+                Subscription::none()
             }
         }
     }

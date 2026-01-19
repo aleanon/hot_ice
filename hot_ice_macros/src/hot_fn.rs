@@ -218,8 +218,6 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
         if let Some(msg_type) = message_type {
             quote! {
                 #vis fn #original_fn_name() -> (Self, hot_ice::iced::Task<hot_ice::macro_use::HotMessage>) {
-                    use hot_ice::IntoBoot;
-
                     let (app, task): (Self, hot_ice::iced::Task<#msg_type>) = Self::#inner_fn_ident();
 
                     (app, task.map(hot_ice::macro_use::DynMessage::into_hot_message))
@@ -230,8 +228,6 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
         } else {
             quote! {
                 #vis fn #original_fn_name() -> (Self, hot_ice::iced::Task<hot_ice::macro_use::HotMessage>) {
-                    use hot_ice::IntoBoot;
-
                     let app = Self::#inner_fn_ident();
 
                     (app, hot_ice::iced::Task::none())
@@ -493,6 +489,7 @@ fn subscription(
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
+    let original_fn_name_str = input.sig.ident.to_string();
     let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
@@ -508,18 +505,131 @@ fn subscription(
     let expanded = if hot_state {
         quote! {
             #no_mangle_attr
-            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage> {
-                Self::#inner_fn_ident(state.ref_state())
-                    .map(hot_ice::macro_use::DynMessage::into_hot_message)
+            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage>> {
+                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Self::#inner_fn_ident(state.ref_state())
+                        .map(hot_ice::macro_use::DynMessage::into_hot_message)
+                })) {
+                    Ok(subscription) => Ok(subscription),
+                    Err(err) => {
+                        std::mem::forget(err);
+                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                    }
+                })
             }
             #input
         }
     } else {
         quote! {
             #no_mangle_attr
-            #vis fn #original_fn_name(&self) -> hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage> {
-                self.#inner_fn_ident()
-                    .map(hot_ice::macro_use::DynMessage::into_hot_message)
+            #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage>> {
+                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.#inner_fn_ident()
+                        .map(hot_ice::macro_use::DynMessage::into_hot_message)
+                })) {
+                    Ok(subscription) => Ok(subscription),
+                    Err(err) => {
+                        std::mem::forget(err);
+                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                    }
+                })
+            }
+            #input
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+/// Helper struct containing parsed function info for the simple panic-catching functions.
+/// All fields are owned to avoid borrow conflicts when mutating the input function.
+struct SimpleFnInfo {
+    original_fn_name: syn::Ident,
+    original_fn_name_str: String,
+    inner_fn_ident: proc_macro2::Ident,
+    vis: syn::Visibility,
+    return_type: proc_macro2::TokenStream,
+    args_no_receiver: Vec<syn::FnArg>,
+    arg_names: Vec<syn::Ident>,
+}
+
+/// Extracts common function info needed for simple panic-catching wrappers.
+/// Clones all necessary data to avoid borrow conflicts.
+fn extract_simple_fn_info(input: &syn::ItemFn) -> SimpleFnInfo {
+    let original_fn_name = input.sig.ident.clone();
+    let original_fn_name_str = input.sig.ident.to_string();
+    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
+    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
+
+    let vis = input.vis.clone();
+    let return_type = match &input.sig.output {
+        syn::ReturnType::Default => quote! { () },
+        syn::ReturnType::Type(_, ty) => quote! { #ty },
+    };
+
+    let mut args_no_receiver = Vec::new();
+    let mut arg_names = Vec::new();
+    for arg in input.sig.inputs.iter().skip(1) {
+        args_no_receiver.push(arg.clone());
+        if let syn::FnArg::Typed(pat_type) = arg {
+            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                arg_names.push(pat_ident.ident.clone());
+            }
+        }
+    }
+
+    SimpleFnInfo {
+        original_fn_name,
+        original_fn_name_str,
+        inner_fn_ident,
+        vis,
+        return_type,
+        args_no_receiver,
+        arg_names,
+    }
+}
+
+/// Generates a simple panic-catching wrapper function that returns HotResult<T>.
+/// Used by theme, style, scale_factor, and title.
+fn generate_simple_wrapper(hot_state: bool, mut input: syn::ItemFn) -> proc_macro::TokenStream {
+    let SimpleFnInfo {
+        original_fn_name,
+        original_fn_name_str,
+        inner_fn_ident,
+        vis,
+        return_type,
+        args_no_receiver,
+        arg_names,
+    } = extract_simple_fn_info(&input);
+
+    input.sig.ident = inner_fn_ident.clone();
+
+    let expanded = if hot_state {
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState, #(#args_no_receiver),*) -> hot_ice::macro_use::HotResult<#return_type> {
+                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*))) {
+                    Ok(result) => Ok(result),
+                    Err(err) => {
+                        std::mem::forget(err);
+                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                    }
+                })
+            }
+            #input
+        }
+    } else {
+        let original_inputs = &input.sig.inputs;
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(#original_inputs) -> hot_ice::macro_use::HotResult<#return_type> {
+                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.#inner_fn_ident(#(#arg_names),*))) {
+                    Ok(result) => Ok(result),
+                    Err(err) => {
+                        std::mem::forget(err);
+                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                    }
+                })
             }
             #input
         }
@@ -529,168 +639,21 @@ fn subscription(
 }
 
 fn theme(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let mut input = parse_macro_input!(item as syn::ItemFn);
-
-    let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
-    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
-    input.sig.ident = inner_fn_ident.clone();
-
-    let vis = &input.vis;
-    let return_type = &input.sig.output;
-
-    let expanded = if hot_state {
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) #return_type {
-                Self::#inner_fn_ident(state.ref_state())
-            }
-            #input
-        }
-    } else {
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(&self) #return_type {
-                self.#inner_fn_ident()
-            }
-            #input
-        }
-    };
-
-    proc_macro::TokenStream::from(expanded)
+    let input = parse_macro_input!(item as syn::ItemFn);
+    generate_simple_wrapper(hot_state, input)
 }
 
 fn style(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let mut input = parse_macro_input!(item as syn::ItemFn);
-
-    let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
-    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
-
-    let vis = &input.vis;
-    let return_type = &input.sig.output;
-
-    let mut args_no_receiver = Vec::new();
-    let mut arg_names = Vec::new();
-    for arg in input.sig.inputs.iter().skip(1) {
-        args_no_receiver.push(arg);
-        if let syn::FnArg::Typed(pat_type) = arg {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                arg_names.push(&pat_ident.ident);
-            }
-        }
-    }
-
-    input.sig.ident = inner_fn_ident.clone();
-
-    let expanded = if hot_state {
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState, #(#args_no_receiver),*) #return_type {
-                Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*)
-            }
-            #input
-        }
-    } else {
-        let original_inputs = &input.sig.inputs;
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(#original_inputs) #return_type {
-                self.#inner_fn_ident(#(#arg_names),*)
-            }
-            #input
-        }
-    };
-
-    proc_macro::TokenStream::from(expanded)
+    let input = parse_macro_input!(item as syn::ItemFn);
+    generate_simple_wrapper(hot_state, input)
 }
 
 fn scale_factor(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let mut input = parse_macro_input!(item as syn::ItemFn);
-
-    let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
-    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
-
-    let vis = &input.vis;
-    let return_type = &input.sig.output;
-
-    let mut args_no_receiver = Vec::new();
-    let mut arg_names = Vec::new();
-    for arg in input.sig.inputs.iter().skip(1) {
-        args_no_receiver.push(arg);
-        if let syn::FnArg::Typed(pat_type) = arg {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                arg_names.push(&pat_ident.ident);
-            }
-        }
-    }
-
-    input.sig.ident = inner_fn_ident.clone();
-
-    let expanded = if hot_state {
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState, #(#args_no_receiver),*) #return_type {
-                Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*)
-            }
-            #input
-        }
-    } else {
-        let original_inputs = &input.sig.inputs;
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(#original_inputs) #return_type {
-                self.#inner_fn_ident(#(#arg_names),*)
-            }
-            #input
-        }
-    };
-
-    proc_macro::TokenStream::from(expanded)
+    let input = parse_macro_input!(item as syn::ItemFn);
+    generate_simple_wrapper(hot_state, input)
 }
 
 fn title(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let mut input = parse_macro_input!(item as syn::ItemFn);
-
-    let original_fn_name = input.sig.ident.clone();
-    let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
-    let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
-
-    let vis = &input.vis;
-    let return_type = &input.sig.output;
-
-    let mut args_no_receiver = Vec::new();
-    let mut arg_names = Vec::new();
-    for arg in input.sig.inputs.iter().skip(1) {
-        args_no_receiver.push(arg);
-        if let syn::FnArg::Typed(pat_type) = arg {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                arg_names.push(&pat_ident.ident);
-            }
-        }
-    }
-
-    input.sig.ident = inner_fn_ident.clone();
-
-    let expanded = if hot_state {
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState, #(#args_no_receiver),*) #return_type {
-                Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*)
-            }
-            #input
-        }
-    } else {
-        let original_inputs = &input.sig.inputs;
-        quote! {
-            #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(#original_inputs) #return_type {
-                self.#inner_fn_ident(#(#arg_names),*)
-            }
-            #input
-        }
-    };
-
-    proc_macro::TokenStream::from(expanded)
+    let input = parse_macro_input!(item as syn::ItemFn);
+    generate_simple_wrapper(hot_state, input)
 }

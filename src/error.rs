@@ -36,3 +36,11 @@ impl<T> From<std::sync::PoisonError<T>> for HotIceError {
         HotIceError::StateLockAcquisitionError
     }
 }
+
+pub struct HotResult<T>(pub Result<T, HotIceError>);
+
+impl<T> From<Result<T, HotIceError>> for HotResult<T> {
+    fn from(result: Result<T, HotIceError>) -> Self {
+        HotResult(result)
+    }
+}

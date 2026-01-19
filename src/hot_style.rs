@@ -1,16 +1,17 @@
 use std::{
     any::type_name,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
 use iced_core::theme;
 
-use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{
+    error::HotIceError, into_result::IntoResult, lib_reloader::LibReloader, reloader::FunctionState,
+};
 
 pub trait IntoHotStyle<State, Theme> {
-    fn static_style(&self, state: &State, theme: &Theme) -> theme::Style;
+    fn static_style(&self, state: &State, theme: &Theme) -> Result<theme::Style, HotIceError>;
 
     fn hot_style(
         &self,
@@ -21,12 +22,13 @@ pub trait IntoHotStyle<State, Theme> {
     ) -> Result<theme::Style, HotIceError>;
 }
 
-impl<T, State, Theme> IntoHotStyle<State, Theme> for T
+impl<T, C, State, Theme> IntoHotStyle<State, Theme> for T
 where
-    T: Fn(&State, &Theme) -> theme::Style,
+    T: Fn(&State, &Theme) -> C,
+    C: IntoResult<theme::Style>,
 {
-    fn static_style(&self, state: &State, theme: &Theme) -> theme::Style {
-        (self)(state, theme)
+    fn static_style(&self, state: &State, theme: &Theme) -> Result<theme::Style, HotIceError> {
+        (self)(state, theme).into_result()
     }
 
     fn hot_style(
@@ -41,17 +43,11 @@ where
             .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&State, &Theme) -> theme::Style>(function_name.as_bytes())
+            lib.get_symbol::<fn(&State, &Theme) -> C>(function_name.as_bytes())
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state, theme))) {
-            Ok(style) => Ok(style),
-            Err(err) => {
-                std::mem::forget(err);
-                Err(HotIceError::FunctionPaniced(function_name))
-            }
-        }
+        function(state, theme).into_result()
     }
 }
 
@@ -65,6 +61,7 @@ pub struct HotStyle<F, State, Theme> {
 impl<F, State, Theme> HotStyle<F, State, Theme>
 where
     F: IntoHotStyle<State, Theme>,
+    Theme: theme::Base,
 {
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
@@ -88,7 +85,13 @@ where
     ) -> theme::Style {
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
-            return self.function.static_style(state, theme);
+            return match self.function.static_style(state, theme) {
+                Ok(style) => style,
+                Err(err) => {
+                    *fn_state = FunctionState::Error(err.to_string());
+                    theme::Base::base(theme)
+                }
+            };
         };
 
         match self
@@ -100,9 +103,9 @@ where
                 style
             }
             Err(err) => {
-                log::error!("style(): {}", err);
+                log::error!("{}\nFallback to base style", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
-                self.function.static_style(state, theme)
+                theme::Base::base(theme)
             }
         }
     }

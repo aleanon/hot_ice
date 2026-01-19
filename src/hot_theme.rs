@@ -1,14 +1,15 @@
 use std::{
     any::type_name,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
-use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{
+    error::HotIceError, into_result::IntoResult, lib_reloader::LibReloader, reloader::FunctionState,
+};
 
 pub trait IntoHotTheme<State, Theme> {
-    fn static_theme(&self, state: &State) -> Option<Theme>;
+    fn static_theme(&self, state: &State) -> Result<Option<Theme>, HotIceError>;
 
     fn hot_theme(
         &self,
@@ -21,10 +22,10 @@ pub trait IntoHotTheme<State, Theme> {
 impl<T, C, State, Theme> IntoHotTheme<State, Theme> for T
 where
     T: Fn(&State) -> C,
-    C: Into<Option<Theme>>,
+    C: IntoResult<Option<Theme>>,
 {
-    fn static_theme(&self, state: &State) -> Option<Theme> {
-        (self)(state).into()
+    fn static_theme(&self, state: &State) -> Result<Option<Theme>, HotIceError> {
+        (self)(state).into_result()
     }
 
     fn hot_theme(
@@ -42,13 +43,7 @@ where
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state))) {
-            Ok(theme) => Ok(theme.into()),
-            Err(err) => {
-                std::mem::forget(err);
-                Err(HotIceError::FunctionPaniced(function_name))
-            }
-        }
+        function(state).into_result()
     }
 }
 
@@ -84,7 +79,13 @@ where
     ) -> Option<Theme> {
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
-            return self.function.static_theme(state);
+            return match self.function.static_theme(state) {
+                Ok(theme) => theme,
+                Err(err) => {
+                    *fn_state = FunctionState::Error(err.to_string());
+                    None
+                }
+            };
         };
 
         match self.function.hot_theme(state, reloader, self.function_name) {
@@ -93,9 +94,9 @@ where
                 theme
             }
             Err(err) => {
-                log::error!("theme(): {}", err);
+                log::error!("{}\nFallback to default theme", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
-                self.function.static_theme(state)
+                None
             }
         }
     }
