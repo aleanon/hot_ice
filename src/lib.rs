@@ -1,4 +1,5 @@
 #![feature(downcast_unchecked)]
+#![feature(min_specialization)]
 
 mod boot;
 #[cfg(target_os = "macos")]
@@ -14,6 +15,7 @@ mod hot_theme;
 mod hot_title;
 mod hot_update;
 mod hot_view;
+mod into_result;
 mod lib_reloader;
 mod message;
 mod reloader;
@@ -29,7 +31,7 @@ pub use hot_ice_macros::{hot_fn, hot_state};
 pub use reloader::ReloaderSettings;
 
 pub mod macro_use {
-    pub use super::error::HotIceError;
+    pub use super::error::{HotIceError, HotResult};
     pub use super::hot_state::{DynState, HotState};
     pub use super::message::{DynMessage, HotMessage};
 }

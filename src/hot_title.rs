@@ -1,16 +1,17 @@
 use std::{
     any::type_name,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
 use iced_core::window;
 
-use crate::{error::HotIceError, lib_reloader::LibReloader, reloader::FunctionState};
+use crate::{
+    error::HotIceError, into_result::IntoResult, lib_reloader::LibReloader, reloader::FunctionState,
+};
 
 pub trait IntoHotTitle<State> {
-    fn static_title(&self, state: &State, window: window::Id) -> String;
+    fn static_title(&self, state: &State, window: window::Id) -> Result<String, HotIceError>;
 
     fn hot_title(
         &self,
@@ -22,8 +23,8 @@ pub trait IntoHotTitle<State> {
 }
 
 impl IntoHotTitle<()> for &'static str {
-    fn static_title(&self, _state: &(), _window: window::Id) -> String {
-        self.to_string()
+    fn static_title(&self, _state: &(), _window: window::Id) -> Result<String, HotIceError> {
+        Ok(self.to_string())
     }
 
     fn hot_title(
@@ -37,12 +38,13 @@ impl IntoHotTitle<()> for &'static str {
     }
 }
 
-impl<T, State> IntoHotTitle<State> for T
+impl<T, C, State> IntoHotTitle<State> for T
 where
-    T: Fn(&State) -> String,
+    T: Fn(&State) -> C,
+    C: IntoResult<String>,
 {
-    fn static_title(&self, state: &State, _window: window::Id) -> String {
-        (self)(state)
+    fn static_title(&self, state: &State, _window: window::Id) -> Result<String, HotIceError> {
+        (self)(state).into_result()
     }
 
     fn hot_title(
@@ -57,17 +59,11 @@ where
             .map_err(|_| HotIceError::LockAcquisitionError)?;
 
         let function = unsafe {
-            lib.get_symbol::<fn(&State) -> String>(function_name.as_bytes())
+            lib.get_symbol::<fn(&State) -> C>(function_name.as_bytes())
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state))) {
-            Ok(title) => Ok(title),
-            Err(err) => {
-                std::mem::forget(err);
-                Err(HotIceError::FunctionPaniced(function_name))
-            }
-        }
+        function(state).into_result()
     }
 }
 
@@ -102,7 +98,13 @@ where
     ) -> String {
         let Some(reloader) = reloader else {
             *fn_state = FunctionState::Static;
-            return self.function.static_title(state, window);
+            return match self.function.static_title(state, window) {
+                Ok(title) => title,
+                Err(err) => {
+                    *fn_state = FunctionState::Error(err.to_string());
+                    String::from("Error")
+                }
+            };
         };
 
         match self
@@ -114,9 +116,9 @@ where
                 title
             }
             Err(err) => {
-                log::error!("hot_title(): {}", err);
+                log::error!("{}\nFallback to default title", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
-                self.function.static_title(state, window)
+                "An ice-hot application".to_string()
             }
         }
     }

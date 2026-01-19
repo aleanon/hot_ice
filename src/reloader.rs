@@ -507,7 +507,7 @@ where
             column![function_name, error_block].spacing(2)
         };
 
-        let function_state = |fn_state, fn_name| match fn_state {
+        let function_widget = |fn_state, fn_name| match fn_state {
             &FunctionState::Static => {
                 function_state_widgets((255, 255, 255, 1.0), fn_name, String::new())
             }
@@ -522,8 +522,8 @@ where
             }
         };
 
-        let view_fn = Container::new(function_state(&view_fn_state, "View")).padding(3);
-        let update_fn = Container::new(function_state(&self.update_fn_state, "Update")).padding(3);
+        let view_fn = Container::new(function_widget(&view_fn_state, "View")).padding(3);
+        let update_fn = Container::new(function_widget(&self.update_fn_state, "Update")).padding(3);
 
         let sub_fn_state = self
             .subscription_fn_state
@@ -531,14 +531,36 @@ where
             .map(|m| m.clone())
             .unwrap_or(FunctionState::Static);
         let subscription_fn =
-            Container::new(function_state(&sub_fn_state, "Subscription")).padding(3);
+            Container::new(function_widget(&sub_fn_state, "Subscription")).padding(3);
 
         let theme_fn_state = self
             .theme_fn_state
             .try_lock()
             .map(|m| m.clone())
             .unwrap_or(FunctionState::Static);
-        let theme_fn = Container::new(function_state(&theme_fn_state, "Theme")).padding(3);
+        let theme_fn = Container::new(function_widget(&theme_fn_state, "Theme")).padding(3);
+
+        let style_fn_state = self
+            .style_fn_state
+            .try_lock()
+            .map(|m| m.clone())
+            .unwrap_or(FunctionState::Static);
+        let style_fn = Container::new(function_widget(&style_fn_state, "Style")).padding(3);
+
+        let scale_factor_fn_state = self
+            .scale_factor_fn_state
+            .try_lock()
+            .map(|m| m.clone())
+            .unwrap_or(FunctionState::Static);
+        let scale_factor_fn =
+            Container::new(function_widget(&scale_factor_fn_state, "ScaleFactor")).padding(3);
+
+        let title_fn_state = self
+            .title_fn_state
+            .try_lock()
+            .map(|m| m.clone())
+            .unwrap_or(FunctionState::Static);
+        let title_fn = Container::new(function_widget(&title_fn_state, "Title")).padding(3);
 
         let function_states = row![
             space().width(Length::Fill),
@@ -546,9 +568,12 @@ where
             update_fn,
             subscription_fn,
             theme_fn,
+            style_fn,
+            title_fn,
+            scale_factor_fn,
             space().width(Length::Fill)
         ]
-        .spacing(100)
+        .spacing(50)
         .padding(Padding {
             left: 20.,
             right: 20.,

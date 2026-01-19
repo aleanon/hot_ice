@@ -1,7 +1,6 @@
 use std::{
     any::type_name,
     marker::PhantomData,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
 
@@ -75,13 +74,7 @@ where
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        match catch_unwind(AssertUnwindSafe(|| function(state, message))) {
-            Ok(sub) => sub.into_result(),
-            Err(err) => {
-                std::mem::forget(err);
-                Err(HotIceError::FunctionPaniced(function_name))
-            }
-        }
+        function(state, message).into_result()
     }
 }
 

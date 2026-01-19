@@ -4,14 +4,20 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use iced::Length;
 use iced_core::Element;
+use iced_widget::container;
 
 use crate::{
-    error::HotIceError, lib_reloader::LibReloader, message::MessageSource, reloader::FunctionState,
+    error::HotIceError, into_result::IntoResult, lib_reloader::LibReloader, message::MessageSource,
+    reloader::FunctionState,
 };
 
 pub trait IntoHotView<'a, State, Message, Theme, Renderer> {
-    fn static_view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer>;
+    fn static_view(
+        &self,
+        state: &'a State,
+    ) -> Result<Element<'a, Message, Theme, Renderer>, HotIceError>;
 
     fn hot_view(
         &self,
@@ -26,10 +32,13 @@ impl<'a, T, C, State, Message, Theme, Renderer> IntoHotView<'a, State, Message, 
 where
     State: 'static,
     T: Fn(&'a State) -> C,
-    C: Into<Element<'a, Message, Theme, Renderer>>,
+    C: IntoResult<Element<'a, Message, Theme, Renderer>>,
 {
-    fn static_view(&self, state: &'a State) -> Element<'a, Message, Theme, Renderer> {
-        (self)(state).into()
+    fn static_view(
+        &self,
+        state: &'a State,
+    ) -> Result<Element<'a, Message, Theme, Renderer>, HotIceError> {
+        (self)(state).into_result()
     }
 
     fn hot_view(
@@ -46,7 +55,7 @@ where
             lib.get_symbol::<fn(&'a State) -> C>(function_name.as_bytes())
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
-        Ok(function(state).into())
+        function(state).into_result()
     }
 }
 
@@ -63,8 +72,8 @@ pub struct HotView<F, State, Message, Theme, Renderer> {
 impl<'a, F, State, Message, Theme, Renderer> HotView<F, State, Message, Theme, Renderer>
 where
     F: IntoHotView<'a, State, Message, Theme, Renderer>,
-    Renderer: iced_core::Renderer + 'a,
-    Theme: 'a,
+    Renderer: iced_core::Renderer + iced_core::text::Renderer + 'a,
+    Theme: iced_widget::text::Catalog + iced_widget::container::Catalog + 'a,
     Message: 'a,
 {
     pub fn new(function: F) -> Self {
@@ -91,8 +100,18 @@ where
         reloader: Option<&Arc<Mutex<LibReloader>>>,
     ) -> Element<'a, MessageSource<Message>, Theme, Renderer> {
         let Some(reloader) = reloader else {
-            *fn_state = FunctionState::Static;
-            return self.function.static_view(state).map(MessageSource::Static);
+            return match self.function.static_view(state) {
+                Ok(element) => {
+                    *fn_state = FunctionState::Static;
+                    element.map(MessageSource::Static)
+                }
+                Err(err) => {
+                    *fn_state = FunctionState::Error(err.to_string());
+                    container(iced::widget::Text::new(err.to_string()))
+                        .center(Length::Fill)
+                        .into()
+                }
+            };
         };
 
         match self.function.hot_view(state, reloader, self.function_name) {
@@ -102,8 +121,10 @@ where
             }
             Err(err) => {
                 log::error!("view(): {}", err);
-                *fn_state = FunctionState::FallBackStatic(err.to_string());
-                self.function.static_view(state).map(MessageSource::Static)
+                *fn_state = FunctionState::Error(err.to_string());
+                container(iced::widget::Text::new(err.to_string()))
+                    .center(Length::Fill)
+                    .into()
             }
         }
     }
