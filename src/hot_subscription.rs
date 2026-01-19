@@ -102,8 +102,23 @@ where
                 task.map(MessageSource::Dynamic)
             }
             Err(err) => {
+                match err {
+                    HotIceError::FunctionNotFound(_) => {
+                        return match self.function.static_subscription(state) {
+                            Ok(sub) => {
+                                *fn_state = FunctionState::Static;
+                                sub.map(MessageSource::Static)
+                            }
+                            Err(err) => {
+                                *fn_state = FunctionState::Error(err.to_string());
+                                Subscription::none()
+                            }
+                        };
+                    }
+                    _ => {}
+                }
                 log::error!("{}\nFallback to empty subscription", err);
-                *fn_state = FunctionState::FallBackStatic(err.to_string());
+                *fn_state = FunctionState::Error(err.to_string());
                 Subscription::none()
             }
         }

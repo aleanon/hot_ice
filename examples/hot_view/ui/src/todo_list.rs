@@ -1,5 +1,6 @@
-use hot_ice::iced::widget::{button, checkbox, column, container, row, space, text, text_input};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
+use hot_ice::iced::widget::{button, checkbox, column, container, row, text, text_input};
+use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -41,7 +42,6 @@ impl State {
         )
     }
 
-    #[unsafe(no_mangle)]
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(value) => {
@@ -71,7 +71,6 @@ impl State {
         Task::none()
     }
 
-    #[unsafe(no_mangle)]
     pub fn view(&self) -> Element<'_, Message> {
         let input_row = row![
             text_input("Add a todo...", &self.input)
@@ -108,37 +107,29 @@ impl State {
 
         todo_column = todo_column.push(stats);
 
-        let content = row![
-            space().width(Length::Fill),
-            todo_column,
-            space().width(Length::Fill)
-        ];
-
-        container(content).center(Length::Fill).into()
+        container(todo_column)
+            .padding(20)
+            .width(Length::Fill)
+            .into()
     }
 
-    #[unsafe(no_mangle)]
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::none()
     }
 
-    #[unsafe(no_mangle)]
     pub fn theme(&self) -> Theme {
         Theme::Dark
     }
 
-    #[unsafe(no_mangle)]
     pub fn style(&self, theme: &Theme) -> theme::Style {
         theme::default(theme)
     }
 
-    #[unsafe(no_mangle)]
     pub fn scale_factor(&self) -> f32 {
         1.0
     }
 
-    #[unsafe(no_mangle)]
-    pub fn title(&self) -> String {
+    pub fn title(&self, _window: window::Id) -> String {
         format!("Todo List: {} items", self.todos.len())
     }
 }

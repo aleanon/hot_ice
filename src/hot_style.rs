@@ -103,8 +103,23 @@ where
                 style
             }
             Err(err) => {
+                match err {
+                    HotIceError::FunctionNotFound(_) => {
+                        return match self.function.static_style(state, theme) {
+                            Ok(style) => {
+                                *fn_state = FunctionState::Static;
+                                style
+                            }
+                            Err(err) => {
+                                *fn_state = FunctionState::Error(err.to_string());
+                                theme::Base::base(theme)
+                            }
+                        };
+                    }
+                    _ => {}
+                }
                 log::error!("{}\nFallback to base style", err);
-                *fn_state = FunctionState::FallBackStatic(err.to_string());
+                *fn_state = FunctionState::Error(err.to_string());
                 theme::Base::base(theme)
             }
         }

@@ -1241,6 +1241,7 @@ dependencies = [
  "iced",
  "iced_core",
  "iced_futures",
+ "iced_graphics",
  "iced_widget",
  "iced_winit",
  "libloading",
@@ -1269,7 +1270,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hot_state"
+name = "hot_message"
 version = "0.1.0"
 dependencies = [
  "hot_ice",

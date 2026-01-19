@@ -120,6 +120,23 @@ where
                 element.map(MessageSource::Dynamic)
             }
             Err(err) => {
+                match err {
+                    HotIceError::FunctionNotFound(_) => {
+                        return match self.function.static_view(state) {
+                            Ok(element) => {
+                                *fn_state = FunctionState::Static;
+                                element.map(MessageSource::Static)
+                            }
+                            Err(err) => {
+                                *fn_state = FunctionState::Error(err.to_string());
+                                container(iced::widget::Text::new(err.to_string()))
+                                    .center(Length::Fill)
+                                    .into()
+                            }
+                        };
+                    }
+                    _ => {}
+                }
                 log::error!("view(): {}", err);
                 *fn_state = FunctionState::Error(err.to_string());
                 container(iced::widget::Text::new(err.to_string()))

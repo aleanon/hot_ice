@@ -155,13 +155,24 @@ where
                         task.map(MessageSource::Dynamic)
                     }
                     Err(err) => {
+                        match err {
+                            HotIceError::FunctionNotFound(_) => {
+                                return match self.function.static_update(state, message) {
+                                    Ok(task) => {
+                                        *fn_state = FunctionState::Static;
+                                        task.map(MessageSource::Static)
+                                    }
+                                    Err(err) => {
+                                        *fn_state = FunctionState::Error(err.to_string());
+                                        Task::none()
+                                    }
+                                };
+                            }
+                            _ => {}
+                        }
                         log::error!("update():{}", err);
-                        self.run_static(
-                            state,
-                            message,
-                            fn_state,
-                            FunctionState::FallBackStatic(err.to_string()),
-                        )
+                        *fn_state = FunctionState::Error(err.to_string());
+                        Task::none()
                     }
                 }
             }

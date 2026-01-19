@@ -94,8 +94,23 @@ where
                 theme
             }
             Err(err) => {
+                match err {
+                    HotIceError::FunctionNotFound(_) => {
+                        return match self.function.static_theme(state) {
+                            Ok(theme) => {
+                                *fn_state = FunctionState::Static;
+                                theme
+                            }
+                            Err(err) => {
+                                *fn_state = FunctionState::Error(err.to_string());
+                                None
+                            }
+                        };
+                    }
+                    _ => {}
+                }
                 log::error!("{}\nFallback to default theme", err);
-                *fn_state = FunctionState::FallBackStatic(err.to_string());
+                *fn_state = FunctionState::Error(err.to_string());
                 None
             }
         }

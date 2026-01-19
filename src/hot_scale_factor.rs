@@ -100,6 +100,19 @@ where
                 scale_factor
             }
             Err(err) => {
+                match err {
+                    HotIceError::FunctionNotFound(_) => {
+                        *fn_state = FunctionState::Static;
+                        return match self.function.static_scale_factor(state, window) {
+                            Ok(scale_factor) => scale_factor,
+                            Err(err) => {
+                                *fn_state = FunctionState::Error(err.to_string());
+                                1.0
+                            }
+                        };
+                    }
+                    _ => {}
+                }
                 log::error!("{}\nFallback to scale factor 1.0", err);
                 *fn_state = FunctionState::FallBackStatic(err.to_string());
                 1.0

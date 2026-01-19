@@ -116,8 +116,23 @@ where
                 title
             }
             Err(err) => {
+                match err {
+                    HotIceError::FunctionNotFound(_) => {
+                        return match self.function.static_title(state, window) {
+                            Ok(title) => {
+                                *fn_state = FunctionState::Static;
+                                title
+                            }
+                            Err(err) => {
+                                *fn_state = FunctionState::Error(err.to_string());
+                                String::from("Error")
+                            }
+                        };
+                    }
+                    _ => {}
+                }
                 log::error!("{}\nFallback to default title", err);
-                *fn_state = FunctionState::FallBackStatic(err.to_string());
+                *fn_state = FunctionState::Error(err.to_string());
                 "An ice-hot application".to_string()
             }
         }

@@ -153,7 +153,7 @@ impl State {
 
     pub fn view(&self) -> Element<'_, Message> {
         let content = column![
-            text("Settings").size(30),
+            text("Settings").size(24),
             row![
                 text("Theme:").size(16),
                 pick_list(

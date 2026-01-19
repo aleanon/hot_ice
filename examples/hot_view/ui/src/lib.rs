@@ -1,6 +1,5 @@
-use hot_ice::iced::widget::{button, checkbox, column, container, row, text, text_input};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
-use serde::{Deserialize, Serialize};
+use hot_ice::iced::widget::{button, checkbox, column, container, row, space, text, text_input};
+use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -23,6 +22,7 @@ pub struct State {
 }
 
 impl State {
+    #[hot_ice::hot_fn]
     pub fn boot() -> (State, Task<Message>) {
         (
             State {
@@ -42,6 +42,7 @@ impl State {
         )
     }
 
+    #[hot_ice::hot_fn]
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(value) => {
@@ -71,6 +72,7 @@ impl State {
         Task::none()
     }
 
+    #[hot_ice::hot_fn]
     pub fn view(&self) -> Element<'_, Message> {
         let input_row = row![
             text_input("Add a todo...", &self.input)
@@ -107,12 +109,16 @@ impl State {
 
         todo_column = todo_column.push(stats);
 
-        container(todo_column)
-            .padding(20)
-            .width(Length::Fill)
-            .into()
+        let content = row![
+            space().width(Length::Fill),
+            todo_column,
+            space().width(Length::Fill)
+        ];
+
+        container(content).center(Length::Fill).into()
     }
 
+    #[hot_ice::hot_fn]
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::none()
     }
@@ -129,7 +135,7 @@ impl State {
         1.0
     }
 
-    pub fn title(&self, _window: window::Id) -> String {
+    pub fn title(&self) -> String {
         format!("Todo List: {} items", self.todos.len())
     }
 }
