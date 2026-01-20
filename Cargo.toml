@@ -112,3 +112,6 @@ cargo_metadata = "0.23.1"
 serde = "*"
 serde_derive = "*"
 serde_json = "*"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -64,8 +64,14 @@ impl IntoResult<f32> for HotResult<f32> {
 // String (title)
 // ============================================================================
 impl<T: Into<String>> IntoResult<String> for T {
-    fn into_result(self) -> Result<String, HotIceError> {
+    default fn into_result(self) -> Result<String, HotIceError> {
         Ok(self.into())
+    }
+}
+
+impl IntoResult<String> for &str {
+    fn into_result(self) -> Result<String, HotIceError> {
+        Ok(self.to_string())
     }
 }
 

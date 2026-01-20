@@ -3,8 +3,8 @@ use std::{
     fmt::Debug,
     io::{BufRead, BufReader},
     path::PathBuf,
-    process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -34,6 +34,45 @@ use crate::{
 
 const DEFAULT_TARGET_DIR: &str = "target/reload";
 const DEFAULT_LIB_DIR: &str = "target/reload/debug";
+
+/// Global handle to the cargo watch child process for cleanup on exit
+static CARGO_WATCH_CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+/// Kill the cargo watch process if it's running.
+/// This is called automatically via atexit, but can also be called manually.
+pub fn kill_cargo_watch() {
+    if let Some(mutex) = CARGO_WATCH_CHILD.get() {
+        if let Ok(mut guard) = mutex.lock() {
+            if let Some(ref mut child) = *guard {
+                log::info!("Killing cargo watch process (pid: {:?})", child.id());
+                #[cfg(unix)]
+                {
+                    // Kill the entire process group
+                    unsafe {
+                        libc::kill(-(child.id() as i32), libc::SIGTERM);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+            }
+            *guard = None;
+        }
+    }
+}
+
+/// Register cleanup handler for cargo watch process
+fn register_cleanup_handler() {
+    // Register atexit handler
+    extern "C" fn cleanup() {
+        kill_cargo_watch();
+    }
+    unsafe {
+        libc::atexit(cleanup);
+    }
+}
 
 #[derive(Clone)]
 pub struct ReloaderSettings {
@@ -780,8 +819,9 @@ where
             log::info!("workspace_root: {}", workspace_root);
             log::info!("watch dir relative path: {}", watch_dir);
 
-            let result = Command::new("cargo")
-                .current_dir(workspace_root)
+            let mut command = Command::new("cargo");
+            command
+                .current_dir(&workspace_root)
                 .arg("watch")
                 .arg("-w")
                 .arg(watch_dir)
@@ -790,8 +830,25 @@ where
                 .arg("-x")
                 .arg(build_args(lib_crate_name).join(" "))
                 .environment_variables(&target_dir)
-                .stderr(Stdio::piped())
-                .spawn();
+                .stderr(Stdio::piped());
+
+            // On Unix, set up process group and death signal so child dies when parent dies
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                // SAFETY: These are async-signal-safe operations
+                unsafe {
+                    command.pre_exec(|| {
+                        // Create a new process group with this process as the leader
+                        libc::setpgid(0, 0);
+                        // Set the process to receive SIGTERM when the parent dies
+                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                        Ok(())
+                    });
+                }
+            }
+
+            let result = command.spawn();
 
             let mut child = match result {
                 Ok(child) => child,
@@ -805,9 +862,21 @@ where
                 }
             };
 
-            log::info!("cargo watch started successfully");
+            log::info!("cargo watch started successfully (pid: {})", child.id());
 
-            if let Some(stderr) = child.stderr.take() {
+            // Register the cleanup handler and store the child handle
+            register_cleanup_handler();
+
+            // Take stderr before storing the child
+            let stderr = child.stderr.take();
+
+            // Store the child handle globally for cleanup
+            let child_mutex = CARGO_WATCH_CHILD.get_or_init(|| Mutex::new(None));
+            if let Ok(mut guard) = child_mutex.lock() {
+                *guard = Some(child);
+            }
+
+            if let Some(stderr) = stderr {
                 std::thread::spawn(move || {
                     let stderr_reader = BufReader::new(stderr);
                     for line in stderr_reader.lines() {

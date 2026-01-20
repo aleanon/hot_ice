@@ -1732,6 +1732,7 @@ dependencies = [
  "iced_graphics",
  "iced_widget",
  "iced_winit",
+ "libc",
  "libloading",
  "log",
  "notify",
