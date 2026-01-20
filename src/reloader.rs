@@ -65,13 +65,27 @@ pub fn kill_cargo_watch() {
 
 /// Register cleanup handler for cargo watch process
 fn register_cleanup_handler() {
-    // Register atexit handler
-    extern "C" fn cleanup() {
-        kill_cargo_watch();
-    }
-    unsafe {
-        libc::atexit(cleanup);
-    }
+    use std::sync::Once;
+    static REGISTER_ONCE: Once = Once::new();
+
+    REGISTER_ONCE.call_once(|| {
+        #[cfg(unix)]
+        {
+            // Register atexit handler on Unix
+            extern "C" fn cleanup() {
+                kill_cargo_watch();
+            }
+            unsafe {
+                libc::atexit(cleanup);
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On non-Unix platforms, we rely on the child.kill() in kill_cargo_watch
+            // which will be called if the process exits gracefully
+        }
+    });
 }
 
 #[derive(Clone)]

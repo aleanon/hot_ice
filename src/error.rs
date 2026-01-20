@@ -29,6 +29,8 @@ pub enum HotIceError {
     FailedToDeserializeState(String),
     #[error("Failed to acquire lock on state")]
     StateLockAcquisitionError,
+    #[error("Serialization not supported")]
+    SerializationNotSupported,
 }
 
 impl<T> From<std::sync::PoisonError<T>> for HotIceError {
