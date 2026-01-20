@@ -50,11 +50,13 @@ The `cold_message` argument tells the macro to:
 
 - **Keep the original return type**: Returns `Element<Message>` instead of `Element<HotMessage>`
 - **Skip message mapping**: Doesn't call `.map(DynMessage::into_hot_message)`
-- **Still enable hot reloading**: The function still gets `#[unsafe(no_mangle)]` for dynamic loading
+- **Still enable hot reloading**: The function still gets `#[unsafe(no_mangle)]`
+- for dynamic loading
 
 ### 3. State is Plain (No Serialization Required)
 
-Since we're not using `#[hot_ice::hot_state]`, the state doesn't need serialization traits:
+Since we're not using `#[hot_ice::hot_state]`,
+the state doesn't need serialization traits:
 
 ```rust
 #[derive(Debug, Clone)]  // No Serialize, Deserialize, Default needed
@@ -134,8 +136,10 @@ With view-only hot reloading, you can instantly see changes to:
 
 ## Important Notes
 
-1. **Only view changes hot reload** - Changes to `update`, `boot`, or `subscription` require recompilation
+1. **Only view changes hot reload** - Changes to `update`, `boot`,
+or `subscription` require recompilation
 2. **State type is fixed** - Changes to state structure require recompilation
 3. **Simplest setup** - Only one function needs the macro
 4. **Original message type** - Uses your `Message` enum directly, no conversion overhead
-5. **Component views unaffected** - Child component `view` functions don't need macros unless you want them hot-reloadable too
+5. **Component views unaffected** - Child component `view` functions don't need
+macros unless you want them hot-reloadable too

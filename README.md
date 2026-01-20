@@ -1,6 +1,7 @@
 # Hot Ice
 
-**Hot-reloadable applications for [Iced](https://github.com/iced-rs/iced)** - Edit your GUI code and see changes instantly without restarting your application.
+**Hot-reloadable applications for [Iced](https://github.com/iced-rs/iced)**
+Edit your GUI code and see changes instantly without restarting your application.
 
 <!-- TODO: Add demo gif here -->
 <!-- ![Hot Ice Demo](./assets/demo.gif) -->
@@ -19,9 +20,10 @@
 
 ### Project Structure
 
-Hot Ice requires a workspace with separate crates for your binary and hot-reloadable UI:
+Hot Ice requires a workspace with separate crates for your
+binary and hot-reloadable UI:
 
-```
+```json
 my_app/
 ├── Cargo.toml              # Workspace manifest
 ├── my_app/                 # Binary crate
@@ -284,7 +286,8 @@ Enables state serialization for persistence across reloads:
 - Adds `#[serde(default)]` for backward compatibility
 - Generates serialization functions for the hot reload system
 
-**Requirements:** All nested types must implement `Serialize`, `Deserialize`, and `Default`.
+**Requirements:** All nested types must implement
+`Serialize`, `Deserialize`, and `Default`.
 
 ## Reloader Settings
 
@@ -380,7 +383,8 @@ The status bar updates to show which functions are successfully hot-reloaded.
 
 ### Cargo watch not stopping
 
-Hot Ice automatically cleans up `cargo watch` when the application exits. If processes remain orphaned, they can be killed manually.
+Hot Ice automatically cleans up `cargo watch` when the application exits.
+If processes remain orphaned, they can be killed manually.
 
 ## License
 
@@ -388,4 +392,5 @@ Hot Ice automatically cleans up `cargo watch` when the application exits. If pro
 
 ## Credits
 
-Built on [Iced](https://github.com/iced-rs/iced) - A cross-platform GUI library for Rust focused on simplicity and type-safety.
+Built on [Iced](https://github.com/iced-rs/iced) - A cross-platform GUI library
+for Rust focused on simplicity and type-safety.
