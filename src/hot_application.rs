@@ -23,9 +23,9 @@ use crate::{
     hot_update::{self, HotUpdate},
     hot_view::{self, HotView},
     lib_reloader::LibReloader,
-    message::DynMessage,
-    message::MessageSource,
+    message::{DynMessage, MessageSource},
     reloader::{FunctionState, Reload, ReloaderSettings},
+    winit,
 };
 
 /// Creates a new hot-reloadable Iced application.
@@ -390,7 +390,7 @@ where
             iced_devtools::attach(program)
         };
 
-        iced_winit::run(program)
+        winit::run(program)
     }
 
     /// Sets the hot reloader configuration.
