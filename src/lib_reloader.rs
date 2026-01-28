@@ -411,13 +411,7 @@ fn find_file_or_dir_in_parent_directories(
 }
 
 fn load_library(lib_file: impl AsRef<Path>) -> Result<Library, HotReloaderError> {
-    Ok(unsafe {
-        let lib = libloading::os::unix::Library::open(
-            Some(lib_file.as_ref()),
-            libloading::os::unix::RTLD_NOW,
-        )?;
-        Library::from(lib)
-    })
+    Ok(unsafe { Library::new(lib_file.as_ref())? })
 }
 
 fn hash_file(f: impl AsRef<Path>) -> u32 {

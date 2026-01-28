@@ -5,7 +5,6 @@ mod boot;
 #[cfg(target_os = "macos")]
 mod codesign;
 mod error;
-mod executor;
 mod hot_application;
 mod hot_program;
 mod hot_scale_factor;
