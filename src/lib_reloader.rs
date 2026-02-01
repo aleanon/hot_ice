@@ -291,9 +291,6 @@ impl LibReloader {
                                 }
                                 thread::sleep(Duration::from_millis(500));
                             }
-                            // Skip signal_change() after re-watching - we'll get a proper
-                            // Create/Modify event when the file reappears
-                            continue;
                         }
 
                         signal_change();
