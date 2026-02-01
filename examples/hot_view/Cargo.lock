@@ -1242,6 +1242,7 @@ dependencies = [
  "cargo_metadata",
  "crc32fast",
  "crossfire",
+ "futures",
  "hot_ice_common",
  "hot_ice_macros",
  "iced",

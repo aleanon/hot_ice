@@ -74,7 +74,19 @@ where
                 .map_err(|_| HotIceError::FunctionNotFound(function_name))?
         };
 
-        function(state, message).into_result()
+        log::debug!(
+            "hot_update: resolved '{}' -> fn@{:p}",
+            function_name,
+            *function as *const ()
+        );
+
+        eprintln!(
+            ">>> CALLING hot fn '{}' at {:p}",
+            function_name, *function as *const ()
+        );
+        let result = function(state, message).into_result();
+        eprintln!("<<< RETURNED from hot fn '{}'", function_name);
+        result
     }
 }
 
@@ -139,6 +151,10 @@ where
     ) -> Task<MessageSource<Message>> {
         match message {
             MessageSource::Static(message) => {
+                log::debug!(
+                    "HotUpdate::update: received Static message for '{}'",
+                    self.function_name
+                );
                 self.run_static(state, message, fn_state, FunctionState::Static)
             }
             MessageSource::Dynamic(message) => {
@@ -151,12 +167,20 @@ where
                     .hot_update(state, message.clone(), reloader, self.function_name)
                 {
                     Ok(task) => {
+                        log::debug!(
+                            "HotUpdate: dispatched Dynamic message via hot path (symbol='{}')",
+                            self.function_name
+                        );
                         *fn_state = FunctionState::Hot;
                         task.map(MessageSource::Dynamic)
                     }
                     Err(err) => {
                         match err {
                             HotIceError::FunctionNotFound(_) => {
+                                log::warn!(
+                                    "HotUpdate: symbol '{}' not found, falling back to static",
+                                    self.function_name
+                                );
                                 return match self.function.static_update(state, message) {
                                     Ok(task) => {
                                         *fn_state = FunctionState::Static;

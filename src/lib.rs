@@ -4,6 +4,7 @@
 mod boot;
 #[cfg(target_os = "macos")]
 mod codesign;
+pub mod erased_executor;
 mod error;
 mod hot_application;
 mod hot_program;
@@ -23,6 +24,7 @@ mod winit;
 
 //Re-export
 pub use iced;
+pub use iced_futures;
 pub use iced_graphics;
 pub use serde;
 pub use serde_derive;

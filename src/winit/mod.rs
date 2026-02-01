@@ -81,6 +81,10 @@ where
 
     let (proxy, worker) = Proxy::new(event_loop.create_proxy());
 
+    // Store a clone of the proxy globally so the Reloader can give it to
+    // cdylib worker threads for sending actions back to the event loop.
+    crate::erased_executor::set_global_proxy(proxy.clone());
+
     #[cfg(feature = "debug")]
     {
         let proxy = proxy.clone();
@@ -1182,36 +1186,17 @@ fn update<P: Program, E: Executor>(
 where
     P::Theme: theme::Base,
 {
-    use futures::futures;
-
-    let mut actions = Vec::new();
+    let actions = Vec::new();
 
     for message in messages.drain(..) {
-        let task = runtime.enter(|| program.update(message));
+        let task = program.update(message);
 
-        if let Some(mut stream) = runtime::task::into_stream(task) {
-            let waker = futures::task::noop_waker_ref();
-            let mut context = futures::task::Context::from_waker(waker);
-
-            // Run immediately available actions synchronously (e.g. widget operations)
-            loop {
-                match runtime.enter(|| stream.poll_next_unpin(&mut context)) {
-                    futures::task::Poll::Ready(Some(action)) => {
-                        actions.push(action);
-                    }
-                    futures::task::Poll::Ready(None) => {
-                        break;
-                    }
-                    futures::task::Poll::Pending => {
-                        runtime.run(stream);
-                        break;
-                    }
-                }
-            }
+        if let Some(stream) = runtime::task::into_stream(task) {
+            runtime.run(stream);
         }
     }
 
-    let subscription = runtime.enter(|| program.subscription());
+    let subscription = program.subscription();
     let recipes = subscription::into_recipes(subscription.map(Action::Output));
 
     runtime.track(recipes);

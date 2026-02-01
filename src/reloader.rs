@@ -29,7 +29,8 @@ use log::info;
 use thiserror::Error;
 
 use crate::{
-    error::HotIceError, hot_program::HotProgram, lib_reloader::LibReloader, message::MessageSource,
+    erased_executor::CdylibWorker, error::HotIceError, hot_program::HotProgram,
+    lib_reloader::LibReloader, message::MessageSource,
 };
 
 const DEFAULT_TARGET_DIR: &str = "target/reload";
@@ -294,6 +295,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     serialized_state_len: usize,
     reloader_state: ReloaderState,
     lib_reloader: Option<Arc<Mutex<LibReloader>>>,
+    worker: Option<CdylibWorker<Message<P>>>,
     reloader_settings: ReloaderSettings,
     lib_name: &'static str,
     sensor_key: u16,
@@ -326,6 +328,7 @@ where
             serialized_state_len: 0,
             reloader_state: ReloaderState::Compiling,
             lib_reloader: None,
+            worker: None,
             reloader_settings: reloader_settings.clone(),
             lib_name,
             sensor_key: 0,
@@ -358,6 +361,7 @@ where
             reloader.lib_reloader = Some(lib_reloader.clone());
 
             reloader.sync_fonts_to_library();
+            reloader.start_worker_from_library();
 
             reloader.reloader_state = ReloaderState::Ready;
             Task::stream(Self::listen_for_lib_changes(
@@ -374,17 +378,29 @@ where
         match message {
             Message::AppMessage(message) => {
                 if self.reloader_state != ReloaderState::Ready {
+                    log::trace!("Reloader::update: dropping AppMessage, state not Ready");
                     return Task::none();
                 }
 
-                program
+                log::debug!(
+                    "Reloader::update: dispatching AppMessage, worker={}",
+                    if self.worker.is_some() {
+                        "active"
+                    } else {
+                        "none"
+                    }
+                );
+
+                let app_task = program
                     .update(
                         &mut self.state,
                         message,
                         &mut self.update_fn_state,
                         self.lib_reloader.as_ref(),
                     )
-                    .map(Message::AppMessage)
+                    .map(Message::AppMessage);
+
+                self.intercept_app_task(app_task)
             }
             Message::CompilationComplete => {
                 let mut lib_reloader = LibReloader::new(
@@ -400,6 +416,7 @@ where
                 self.lib_reloader = Some(lib_reloader.clone());
 
                 self.sync_fonts_to_library();
+                self.start_worker_from_library();
 
                 self.reloader_state = ReloaderState::Ready;
                 let listen_for_lib_changes = Task::stream(Self::listen_for_lib_changes(
@@ -460,6 +477,16 @@ where
                 self.serialize_state()
                     .inspect_err(|e| log::error!("{}", e))
                     .ok();
+
+                // Shut down the old worker BEFORE signaling the library reload.
+                // This ensures the worker thread (which runs inside the cdylib's
+                // executor.enter()) has fully exited before the old library is
+                // unloaded by listen_for_lib_changes.
+                if let Some(mut worker) = self.worker.take() {
+                    log::info!("Shutting down cdylib worker before reload");
+                    worker.shutdown();
+                }
+
                 self.update_channel
                     .0
                     .send(ReadyToReload)
@@ -475,6 +502,12 @@ where
                                 .ok();
 
                             self.sync_fonts_to_library();
+                            log::info!("ReloadComplete: starting new worker from reloaded library");
+                            self.start_worker_from_library();
+                            log::info!(
+                                "ReloadComplete: worker started = {}",
+                                self.worker.is_some()
+                            );
 
                             self.reloader_state = ReloaderState::Ready;
                         } else {
@@ -930,10 +963,28 @@ where
 
                 loop {
                     if let Ok(mut reloader) = lib_reloader.lock() {
-                        if let Err(err) = reloader.update() {
-                            log::error!("{err}")
-                        } else {
-                            break;
+                        match reloader.update() {
+                            Ok(result) => {
+                                if let crate::lib_reloader::UpdateResult::Reloaded { retired } =
+                                    result
+                                {
+                                    // The old library is kept alive by RetiredLibrary.
+                                    // Worker shutdown and restart happens in the
+                                    // ReloadComplete message handler which has &mut self.
+                                    if let Some(retired) = retired {
+                                        log::info!(
+                                            "Library reloaded, retired old: {:?}",
+                                            retired.file_path
+                                        );
+                                        // Drop the retired library — the old worker (if any)
+                                        // was already shut down in the AboutToReload handler,
+                                        // so no cdylib code is running from the old library.
+                                        drop(retired);
+                                    }
+                                }
+                                break;
+                            }
+                            Err(err) => log::error!("{err}"),
                         }
                     }
                     std::thread::sleep(Duration::from_millis(1));
@@ -1092,6 +1143,66 @@ where
         }
 
         log::info!("Synced {} fonts to loaded library", self.loaded_fonts.len());
+    }
+
+    /// Starts a cdylib worker thread from the currently loaded library.
+    ///
+    /// The worker thread runs inside the cdylib's executor TLS context,
+    /// allowing `tokio::spawn()` and similar calls to work correctly.
+    /// Streams from app tasks are sent to the worker for async polling.
+    fn start_worker_from_library(&mut self) {
+        let Some(lib_reloader) = &self.lib_reloader else {
+            log::warn!("Cannot start worker: lib_reloader is None");
+            return;
+        };
+
+        let Ok(lib) = lib_reloader.lock() else {
+            log::error!("Cannot start worker: failed to lock lib_reloader");
+            return;
+        };
+
+        let Some(proxy) = crate::erased_executor::get_global_proxy::<Message<P>>() else {
+            log::error!("Cannot start worker: global proxy not set");
+            return;
+        };
+
+        match unsafe { CdylibWorker::start(&lib, proxy) } {
+            Ok(worker) => {
+                log::info!("Started cdylib worker thread");
+                self.worker = Some(worker);
+            }
+            Err(err) => {
+                log::warn!("Failed to start worker from library: {}", err);
+                // Not fatal — the library may not export worker functions
+                // (e.g. if export_executor! was not used)
+            }
+        }
+    }
+
+    /// Intercepts a task returned by app update, sending its stream to the
+    /// cdylib worker thread for polling.
+    ///
+    /// The worker runs inside the cdylib's executor TLS context, so async
+    /// futures that call `tokio::spawn()` work correctly. Actions produced
+    /// by the stream are sent back to the event loop via `Proxy::send_action()`.
+    ///
+    /// If no worker is running (e.g. the library doesn't export executor
+    /// functions), the task is returned as-is and runs on the binary's
+    /// executor — which works for non-tokio-dependent tasks.
+    fn intercept_app_task(&self, task: Task<Message<P>>) -> Task<Message<P>> {
+        let Some(worker) = self.worker.as_ref() else {
+            log::debug!("intercept_app_task: no worker, running task on binary executor");
+            return task;
+        };
+
+        let Some(stream) = iced_winit::runtime::task::into_stream(task) else {
+            log::trace!("intercept_app_task: task has no stream (Task::none())");
+            return Task::none();
+        };
+
+        log::debug!("intercept_app_task: sending stream to cdylib worker");
+        worker.run_stream(stream);
+        Task::none()
     }
 }
 

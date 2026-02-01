@@ -388,6 +388,9 @@ fn update(hot_state: bool, is_hot: bool, item: proc_macro::TokenStream) -> proc_
 
     let expanded = if hot_state {
         quote! {
+
+            hot_ice::export_executor!();
+
             #no_mangle_attr
             #vis fn #original_fn_name(
                 state: &mut hot_ice::macro_use::HotState,
@@ -413,6 +416,9 @@ fn update(hot_state: bool, is_hot: bool, item: proc_macro::TokenStream) -> proc_
         }
     } else {
         quote! {
+
+            hot_ice::export_executor!();
+
             #no_mangle_attr
             #vis fn #original_fn_name(
                 &mut self,

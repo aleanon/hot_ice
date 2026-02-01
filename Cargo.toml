@@ -104,6 +104,7 @@ iced_runtime = { version = "0.14.0" }
 iced_program = { version = "0.14.0" }
 iced_core = { version = "0.14.0" }
 iced_futures = { version = "0.14.0" }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await", "executor"] }
 iced_widget = { version = "0.14.2" }
 iced = { version = "0.14.0" }
 iced_graphics = { version = "0.14.0" }

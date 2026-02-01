@@ -17,6 +17,41 @@ use crate::error::HotReloaderError;
 // #[cfg(feature = "verbose")]
 // use log;
 
+/// A previously loaded library that has been replaced by a newer version.
+///
+/// The caller is responsible for keeping this alive until any in-flight work
+/// (e.g. spawned async futures) that references code in this library completes.
+/// Dropping this will close the library and clean up its file on disk.
+pub struct RetiredLibrary {
+    pub library: Library,
+    pub file_path: PathBuf,
+}
+
+impl Drop for RetiredLibrary {
+    fn drop(&mut self) {
+        log::info!("Closing retired library {:?}", self.file_path);
+        if self.file_path.exists() {
+            let _ = fs::remove_file(&self.file_path);
+        }
+    }
+}
+
+/// Result of a `LibReloader::update()` call.
+pub enum UpdateResult {
+    /// The library has not changed since the last check.
+    Unchanged,
+    /// The library was reloaded. If there was a previous library loaded,
+    /// it is returned so the caller can keep it alive.
+    Reloaded { retired: Option<RetiredLibrary> },
+}
+
+impl UpdateResult {
+    /// Returns true if a reload occurred.
+    pub fn was_reloaded(&self) -> bool {
+        matches!(self, UpdateResult::Reloaded { .. })
+    }
+}
+
 /// Manages watches a library (dylib) file, loads it using
 /// [`libloading::Library`] and [provides access to its
 /// symbols](LibReloader::get_symbol). When the library changes, [`LibReloader`]
@@ -131,19 +166,26 @@ impl LibReloader {
 
     /// Checks if the watched library has changed. If it has, reload it and return
     /// true. Otherwise return false.
-    pub fn update(&mut self) -> Result<bool, HotReloaderError> {
+    ///
+    /// If a reload occurs and there was a previously loaded library, it is
+    /// returned as a `RetiredLibrary` so the caller can keep it alive until
+    /// any in-flight work (e.g. spawned futures) completes.
+    pub fn update(&mut self) -> Result<UpdateResult, HotReloaderError> {
         if !self.changed.load(Ordering::Acquire) {
-            return Ok(false);
+            return Ok(UpdateResult::Unchanged);
         }
         self.changed.store(false, Ordering::Release);
 
-        self.reload()?;
+        let retired = self.reload()?;
 
-        Ok(true)
+        Ok(UpdateResult::Reloaded { retired })
     }
 
     /// Reload library `self.lib_file`.
-    fn reload(&mut self) -> Result<(), HotReloaderError> {
+    ///
+    /// Returns the old library (if any) instead of closing it, so the caller
+    /// can retain it while futures spawned on it are still running.
+    fn reload(&mut self) -> Result<Option<RetiredLibrary>, HotReloaderError> {
         let Self {
             load_counter,
             lib_dir,
@@ -157,13 +199,16 @@ impl LibReloader {
 
         log::info!("reloading lib {watched_lib_file:?}");
 
-        // Close the loaded lib, copy the new lib to a file we can load, then load it.
-        if let Some(lib) = lib.take() {
-            lib.close()?;
-            if loaded_lib_file.exists() {
-                let _ = fs::remove_file(&loaded_lib_file);
-            }
-        }
+        // Take the old library out instead of closing it
+        let retired = if let Some(old_lib) = lib.take() {
+            let old_path = loaded_lib_file.clone();
+            Some(RetiredLibrary {
+                library: old_lib,
+                file_path: old_path,
+            })
+        } else {
+            None
+        };
 
         if watched_lib_file.exists() {
             *load_counter += 1;
@@ -173,10 +218,19 @@ impl LibReloader {
                 *load_counter,
                 loaded_lib_name_template,
             );
-            log::trace!("copy {watched_lib_file:?} -> {loaded_lib_file:?}");
+            let watched_hash = hash_file(watched_lib_file.as_path());
+            let watched_size = fs::metadata(watched_lib_file.as_path())
+                .map(|m| m.len())
+                .unwrap_or(0);
+            log::info!(
+                "copy {watched_lib_file:?} (hash={:#010x}, size={}) -> {loaded_lib_file:?}",
+                watched_hash,
+                watched_size
+            );
             fs::copy(watched_lib_file, &loaded_lib_file)?;
-            self.lib_file_hash
-                .store(hash_file(&loaded_lib_file), Ordering::Release);
+            let copied_hash = hash_file(&loaded_lib_file);
+            log::info!("loaded {loaded_lib_file:?} (hash={:#010x})", copied_hash);
+            self.lib_file_hash.store(copied_hash, Ordering::Release);
             #[cfg(target_os = "macos")]
             self.codesigner.codesign(&loaded_lib_file);
             self.lib = Some(load_library(&loaded_lib_file)?);
@@ -185,7 +239,7 @@ impl LibReloader {
             log::warn!("trying to reload library but it does not exist");
         }
 
-        Ok(())
+        Ok(retired)
     }
 
     /// Watch for changes of `lib_file`.
@@ -222,14 +276,24 @@ impl LibReloader {
             //     .expect("watch lib file");
 
             let signal_change = || {
-                if hash_file(&lib_file) == lib_file_hash.load(Ordering::Acquire)
-                    || changed.load(Ordering::Acquire)
-                {
-                    // file not changed
+                let current_hash = hash_file(&lib_file);
+                let stored_hash = lib_file_hash.load(Ordering::Acquire);
+                let already_changed = changed.load(Ordering::Acquire);
+                if current_hash == stored_hash || already_changed {
+                    log::trace!(
+                        "signal_change: skip (current={:#010x}, stored={:#010x}, pending={})",
+                        current_hash,
+                        stored_hash,
+                        already_changed
+                    );
                     return false;
                 }
 
-                log::debug!("{lib_file:?} changed",);
+                log::info!(
+                    "{lib_file:?} changed (hash {:#010x} -> {:#010x})",
+                    stored_hash,
+                    current_hash
+                );
 
                 changed.store(true, Ordering::Release);
 
