@@ -196,10 +196,8 @@ async fn drain_stream<M: 'static>(stream: BoxStream<'static, Action<M>>, proxy: 
     use futures::StreamExt;
     futures::pin_mut!(stream);
     while let Some(action) = stream.next().await {
-        log::trace!("worker drain_stream: forwarding action to event loop");
         proxy.send_action(action);
     }
-    log::trace!("worker drain_stream: stream completed");
 }
 
 // ---------------------------------------------------------------------------

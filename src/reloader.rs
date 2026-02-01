@@ -378,18 +378,8 @@ where
         match message {
             Message::AppMessage(message) => {
                 if self.reloader_state != ReloaderState::Ready {
-                    log::trace!("Reloader::update: dropping AppMessage, state not Ready");
                     return Task::none();
                 }
-
-                log::debug!(
-                    "Reloader::update: dispatching AppMessage, worker={}",
-                    if self.worker.is_some() {
-                        "active"
-                    } else {
-                        "none"
-                    }
-                );
 
                 let app_task = program
                     .update(
@@ -502,12 +492,7 @@ where
                                 .ok();
 
                             self.sync_fonts_to_library();
-                            log::info!("ReloadComplete: starting new worker from reloaded library");
                             self.start_worker_from_library();
-                            log::info!(
-                                "ReloadComplete: worker started = {}",
-                                self.worker.is_some()
-                            );
 
                             self.reloader_state = ReloaderState::Ready;
                         } else {
@@ -1191,16 +1176,13 @@ where
     /// executor — which works for non-tokio-dependent tasks.
     fn intercept_app_task(&self, task: Task<Message<P>>) -> Task<Message<P>> {
         let Some(worker) = self.worker.as_ref() else {
-            log::debug!("intercept_app_task: no worker, running task on binary executor");
             return task;
         };
 
         let Some(stream) = iced_winit::runtime::task::into_stream(task) else {
-            log::trace!("intercept_app_task: task has no stream (Task::none())");
             return Task::none();
         };
 
-        log::debug!("intercept_app_task: sending stream to cdylib worker");
         worker.run_stream(stream);
         Task::none()
     }
