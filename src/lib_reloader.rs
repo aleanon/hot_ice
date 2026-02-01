@@ -157,7 +157,7 @@ impl LibReloader {
 
     // needs to be public as it is used inside the hot_module macro.
     pub fn subscribe_to_file_changes(&mut self) -> AsyncRx<()> {
-        log::trace!("subscribe to file change");
+        log::debug!("subscribe to file change");
         let (tx, rx) = mpsc::unbounded_async();
         let mut subscribers = self.file_change_subscribers.lock().unwrap();
         subscribers.push(tx);
@@ -280,7 +280,7 @@ impl LibReloader {
                 let stored_hash = lib_file_hash.load(Ordering::Acquire);
                 let already_changed = changed.load(Ordering::Acquire);
                 if current_hash == stored_hash || already_changed {
-                    log::trace!(
+                    log::debug!(
                         "signal_change: skip (current={:#010x}, stored={:#010x}, pending={})",
                         current_hash,
                         stored_hash,
@@ -299,7 +299,7 @@ impl LibReloader {
 
                 // inform subscribers
                 let subscribers = file_change_subscribers.lock().unwrap();
-                log::trace!(
+                log::debug!(
                     "sending ChangedEvent::LibFileChanged to {} subscribers",
                     subscribers.len()
                 );
@@ -328,7 +328,7 @@ impl LibReloader {
                             Ok(events) => events,
                         };
 
-                        log::trace!("file change events: {events:?}");
+                        log::debug!("file change events: {events:?}");
                         let was_removed =
                             events
                                 .iter()
@@ -398,7 +398,7 @@ impl LibReloader {
 impl Drop for LibReloader {
     fn drop(&mut self) {
         if self.loaded_lib_file.exists() {
-            log::trace!("removing {:?}", self.loaded_lib_file);
+            log::debug!("removing {:?}", self.loaded_lib_file);
             let _ = fs::remove_file(&self.loaded_lib_file);
         }
     }
