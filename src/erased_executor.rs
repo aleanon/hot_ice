@@ -103,8 +103,11 @@ use iced_runtime::Action;
 pub enum WorkerCommand<M> {
     /// Poll this stream to completion, forwarding actions via the proxy.
     RunStream(BoxStream<'static, Action<M>>),
-    /// Shut down the worker thread.
+    /// Shut down the worker thread immediately, dropping in-flight streams.
     Shutdown,
+    /// Stop accepting new streams and drain active ones to completion,
+    /// with a timeout to prevent indefinite blocking.
+    Drain { timeout: std::time::Duration },
 }
 
 // ---------------------------------------------------------------------------
@@ -183,10 +186,60 @@ async fn worker_loop<M: Send + 'static>(
                     WorkerCommand::Shutdown => {
                         break;
                     }
+                    WorkerCommand::Drain { timeout } => {
+                        drain_active(&mut active, timeout).await;
+                        return;
+                    }
                 }
             }
             // Both channels closed
             complete => break,
+        }
+    }
+}
+
+/// Polls all active futures to completion, with a timeout.
+///
+/// The `FuturesUnordered` contains N real tasks + 1 sentinel `pending()`
+/// future. When only the sentinel remains (`len() <= 1`), all real work
+/// is done.
+async fn drain_active(
+    active: &mut futures::stream::FuturesUnordered<futures::future::BoxFuture<'static, ()>>,
+    timeout: std::time::Duration,
+) {
+    use futures::FutureExt;
+    use futures::stream::StreamExt;
+
+    if active.len() <= 1 {
+        log::info!("hot-ice drain: no active streams, exiting immediately");
+        return;
+    }
+
+    log::info!(
+        "hot-ice drain: waiting for {} active stream(s) to complete (timeout: {:?})",
+        active.len() - 1,
+        timeout,
+    );
+
+    let deadline = futures_timer::Delay::new(timeout).fuse();
+    futures::pin_mut!(deadline);
+
+    loop {
+        futures::select! {
+            _ = active.select_next_some() => {
+                if active.len() <= 1 {
+                    log::info!("hot-ice drain: all streams completed");
+                    return;
+                }
+            }
+            _ = deadline => {
+                log::warn!(
+                    "hot-ice drain: timeout after {:?}, dropping {} remaining stream(s)",
+                    timeout,
+                    active.len() - 1,
+                );
+                return;
+            }
         }
     }
 }
@@ -295,12 +348,84 @@ impl<M: Send + 'static> CdylibWorker<M> {
             self.worker_handle = std::ptr::null_mut();
         }
     }
+
+    /// Begins a graceful drain of all active streams, then returns a
+    /// [`DrainHandle`] that the caller must eventually join.
+    ///
+    /// Sends a `Drain` command with the given timeout, closes the channel,
+    /// and returns a handle. The caller should call `DrainHandle::join()` on
+    /// a background thread — it blocks until the worker exits (drain
+    /// completes or times out).
+    ///
+    /// After calling this, the `CdylibWorker` is consumed and cannot be used.
+    pub fn begin_drain(mut self, timeout: std::time::Duration) -> DrainHandle {
+        let _ = self
+            .command_tx
+            .unbounded_send(WorkerCommand::Drain { timeout });
+        self.command_tx.close_channel();
+
+        let handle = DrainHandle {
+            stop_fn: self.stop_fn,
+            worker_handle: self.worker_handle,
+        };
+
+        // Prevent Drop from calling shutdown
+        self.worker_handle = std::ptr::null_mut();
+        std::mem::forget(self);
+
+        handle
+    }
 }
 
 impl<M: Send + 'static> Drop for CdylibWorker<M> {
     fn drop(&mut self) {
         if !self.worker_handle.is_null() {
             self.shutdown();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DrainHandle — background cleanup handle for a draining worker
+// ---------------------------------------------------------------------------
+
+/// Opaque handle for joining a draining worker thread.
+///
+/// Returned by [`CdylibWorker::begin_drain()`]. The caller must eventually
+/// call [`join()`](DrainHandle::join) to block until the worker thread exits.
+/// The `Drop` impl calls `join` as a safety net if the caller forgets.
+pub struct DrainHandle {
+    stop_fn: ffi::StopWorkerFn,
+    worker_handle: *mut (),
+}
+
+// Safety: same reasoning as CdylibWorker — worker_handle is only used to
+// call stop_fn which joins the thread.
+unsafe impl Send for DrainHandle {}
+unsafe impl Sync for DrainHandle {}
+
+impl DrainHandle {
+    /// Blocks until the worker thread exits (drain completes or times out).
+    pub fn join(mut self) {
+        if !self.worker_handle.is_null() {
+            log::info!("hot-ice drain: joining old worker thread");
+            unsafe {
+                (self.stop_fn)(self.worker_handle);
+            }
+            self.worker_handle = std::ptr::null_mut();
+            log::info!("hot-ice drain: old worker thread joined");
+        }
+    }
+}
+
+impl Drop for DrainHandle {
+    fn drop(&mut self) {
+        if !self.worker_handle.is_null() {
+            log::warn!("hot-ice drain: DrainHandle dropped without join(), joining now");
+            unsafe {
+                (self.stop_fn)(self.worker_handle);
+            }
+            self.worker_handle = std::ptr::null_mut();
         }
     }
 }

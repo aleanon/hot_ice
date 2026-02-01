@@ -29,8 +29,11 @@ use log::info;
 use thiserror::Error;
 
 use crate::{
-    erased_executor::CdylibWorker, error::HotIceError, hot_program::HotProgram,
-    lib_reloader::LibReloader, message::MessageSource,
+    erased_executor::{CdylibWorker, DrainHandle},
+    error::HotIceError,
+    hot_program::HotProgram,
+    lib_reloader::{LibReloader, RetiredLibrary},
+    message::MessageSource,
 };
 
 const DEFAULT_TARGET_DIR: &str = "target/reload";
@@ -103,6 +106,9 @@ pub struct ReloaderSettings {
     /// The directory to watch for changes before recompiling, None means it will watch
     /// the UI crate root, default: None
     pub watch_dir: Option<PathBuf>,
+    /// Maximum time to wait for in-flight async streams to complete during a
+    /// hot reload before dropping them. Default: 5 seconds.
+    pub drain_timeout: Duration,
 }
 
 impl Default for ReloaderSettings {
@@ -113,6 +119,7 @@ impl Default for ReloaderSettings {
             compile_in_reloader: true,
             file_watch_debounce: Duration::from_millis(25),
             watch_dir: None,
+            drain_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -219,13 +226,17 @@ where
     }
 }
 
+/// Wraps a `RetiredLibrary` so it can be passed through `Message` (which must
+/// be `Clone`). The inner `Option` is `.take()`n by the handler.
+type SharedRetired = Arc<Mutex<Option<RetiredLibrary>>>;
+
 pub enum Message<P>
 where
     P: HotProgram,
 {
     CompilationComplete,
     AboutToReload,
-    ReloadComplete,
+    ReloadComplete(Option<SharedRetired>),
     SendReadySignal,
     Error(ReloaderError),
     AppMessage(MessageSource<P::Message>),
@@ -241,7 +252,7 @@ where
             Self::AppMessage(message) => Self::AppMessage(message.clone()),
             Self::SendReadySignal => Self::SendReadySignal,
             Self::AboutToReload => Self::AboutToReload,
-            Self::ReloadComplete => Self::ReloadComplete,
+            Self::ReloadComplete(r) => Self::ReloadComplete(r.clone()),
             Self::CompilationComplete => Self::CompilationComplete,
             Self::Error(error) => Self::Error(error.clone()),
         }
@@ -254,7 +265,7 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::AppMessage(message) => message.fmt(f),
             Self::SendReadySignal => write!(f, "SendReadySignal"),
             Self::AboutToReload => write!(f, "AboutToReload"),
-            Self::ReloadComplete => write!(f, "ReloadComplete"),
+            Self::ReloadComplete(_) => write!(f, "ReloadComplete"),
             Self::CompilationComplete => write!(f, "CompilationComplete"),
             Self::Error(error) => write!(f, "{}", error),
         }
@@ -296,6 +307,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     reloader_state: ReloaderState,
     lib_reloader: Option<Arc<Mutex<LibReloader>>>,
     worker: Option<CdylibWorker<Message<P>>>,
+    pending_drain: Option<DrainHandle>,
     reloader_settings: ReloaderSettings,
     lib_name: &'static str,
     sensor_key: u16,
@@ -329,6 +341,7 @@ where
             reloader_state: ReloaderState::Compiling,
             lib_reloader: None,
             worker: None,
+            pending_drain: None,
             reloader_settings: reloader_settings.clone(),
             lib_name,
             sensor_key: 0,
@@ -468,13 +481,15 @@ where
                     .inspect_err(|e| log::error!("{}", e))
                     .ok();
 
-                // Shut down the old worker BEFORE signaling the library reload.
-                // This ensures the worker thread (which runs inside the cdylib's
-                // executor.enter()) has fully exited before the old library is
-                // unloaded by listen_for_lib_changes.
-                if let Some(mut worker) = self.worker.take() {
-                    log::info!("Shutting down cdylib worker before reload");
-                    worker.shutdown();
+                // Begin draining the old worker instead of hard shutdown.
+                // The worker stops accepting new streams and polls active ones
+                // to completion (or until timeout). The actual thread join
+                // happens later in a background cleanup thread spawned from
+                // ReloadComplete.
+                if let Some(worker) = self.worker.take() {
+                    log::info!("Beginning drain of cdylib worker before reload");
+                    let drain_handle = worker.begin_drain(self.reloader_settings.drain_timeout);
+                    self.pending_drain = Some(drain_handle);
                 }
 
                 self.update_channel
@@ -483,7 +498,7 @@ where
                     .expect("Update Channel closed");
                 Task::none()
             }
-            Message::ReloadComplete => {
+            Message::ReloadComplete(retired_wrapper) => {
                 match &self.reloader_state {
                     ReloaderState::Reloading(num) => {
                         if *num == 1 {
@@ -495,8 +510,40 @@ where
                             self.start_worker_from_library();
 
                             self.reloader_state = ReloaderState::Ready;
+
+                            // Spawn background cleanup thread: join the old
+                            // (draining) worker, then drop the retired library.
+                            let drain_handle = self.pending_drain.take();
+                            let retired =
+                                retired_wrapper.as_ref().and_then(|w| w.lock().ok()?.take());
+
+                            if drain_handle.is_some() || retired.is_some() {
+                                std::thread::Builder::new()
+                                    .name("hot-ice-drain-cleanup".into())
+                                    .spawn(move || {
+                                        if let Some(h) = drain_handle {
+                                            h.join();
+                                        }
+                                        if let Some(retired) = retired {
+                                            log::info!(
+                                                "Dropping retired library: {:?}",
+                                                retired.file_path
+                                            );
+                                            drop(retired);
+                                        }
+                                        log::info!("hot-ice drain: cleanup thread finished");
+                                    })
+                                    .expect("spawn drain cleanup thread");
+                            }
                         } else {
                             self.reloader_state = ReloaderState::Reloading(num - 1);
+                            // Drop the retired library from a skipped reload
+                            // immediately — no worker was using it.
+                            if let Some(wrapper) = &retired_wrapper {
+                                if let Ok(mut guard) = wrapper.lock() {
+                                    guard.take();
+                                }
+                            }
                         }
                     }
                     s => {
@@ -950,22 +997,25 @@ where
                     if let Ok(mut reloader) = lib_reloader.lock() {
                         match reloader.update() {
                             Ok(result) => {
-                                if let crate::lib_reloader::UpdateResult::Reloaded { retired } =
-                                    result
+                                let retired_wrapper =
+                                    if let crate::lib_reloader::UpdateResult::Reloaded { retired } =
+                                        result
+                                    {
+                                        retired.map(|r| {
+                                            log::info!(
+                                                "Library reloaded, retired old: {:?}",
+                                                r.file_path
+                                            );
+                                            Arc::new(Mutex::new(Some(r)))
+                                        })
+                                    } else {
+                                        None
+                                    };
+
+                                if let Err(err) =
+                                    output.try_send(Message::ReloadComplete(retired_wrapper))
                                 {
-                                    // The old library is kept alive by RetiredLibrary.
-                                    // Worker shutdown and restart happens in the
-                                    // ReloadComplete message handler which has &mut self.
-                                    if let Some(retired) = retired {
-                                        log::info!(
-                                            "Library reloaded, retired old: {:?}",
-                                            retired.file_path
-                                        );
-                                        // Drop the retired library — the old worker (if any)
-                                        // was already shut down in the AboutToReload handler,
-                                        // so no cdylib code is running from the old library.
-                                        drop(retired);
-                                    }
+                                    log::error!("Failed to send reload complete message: {err}");
                                 }
                                 break;
                             }
@@ -976,10 +1026,6 @@ where
                 }
 
                 log::info!("Reload complete");
-
-                if let Err(err) = output.try_send(Message::ReloadComplete) {
-                    log::error!("Failed to send reload complete message: {err}")
-                }
             }
         })
     }
