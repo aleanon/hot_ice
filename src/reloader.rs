@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::HashSet,
     fmt::Debug,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -15,14 +16,14 @@ use hot_ice_common::{
     SERIALIZE_STATE_FUNCTION_NAME,
 };
 use iced_core::{
-    Background, Color, Element, Length, Padding, Settings, Theme,
+    Alignment, Background, Color, Element, Length, Padding, Settings, Theme,
     theme::{self, Base, Mode},
     window,
 };
 use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{
-    Container, Text, column, container, container::Style as ContainerStyle, row, sensor, space,
-    text::Style, themer,
+    Text, button, column, container, container::Style as ContainerStyle, row, sensor, space,
+    text::Style as TextStyle, themer,
 };
 use iced_winit::{program::Program, runtime::Task};
 use log::info;
@@ -240,6 +241,8 @@ where
     SendReadySignal,
     Error(ReloaderError),
     AppMessage(MessageSource<P::Message>),
+    DismissError(String),
+    ToggleErrorDetail(String),
 }
 
 impl<P> Clone for Message<P>
@@ -255,6 +258,8 @@ where
             Self::ReloadComplete(r) => Self::ReloadComplete(r.clone()),
             Self::CompilationComplete => Self::CompilationComplete,
             Self::Error(error) => Self::Error(error.clone()),
+            Self::DismissError(name) => Self::DismissError(name.clone()),
+            Self::ToggleErrorDetail(name) => Self::ToggleErrorDetail(name.clone()),
         }
     }
 }
@@ -268,6 +273,8 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::ReloadComplete(_) => write!(f, "ReloadComplete"),
             Self::CompilationComplete => write!(f, "CompilationComplete"),
             Self::Error(error) => write!(f, "{}", error),
+            Self::DismissError(name) => write!(f, "DismissError({})", name),
+            Self::ToggleErrorDetail(name) => write!(f, "ToggleErrorDetail({})", name),
         }
     }
 }
@@ -319,6 +326,8 @@ pub struct Reloader<P: HotProgram + 'static> {
     title_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
     loaded_fonts: Vec<Cow<'static, [u8]>>,
+    dismissed_errors: HashSet<String>,
+    expanded_errors: HashSet<String>,
 }
 
 impl<'a, P> Reloader<P>
@@ -353,6 +362,8 @@ where
             title_fn_state: Mutex::new(FunctionState::Static),
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
             loaded_fonts: fonts,
+            dismissed_errors: HashSet::new(),
+            expanded_errors: HashSet::new(),
         };
 
         let task = if reloader_settings.compile_in_reloader {
@@ -510,6 +521,8 @@ where
                             self.start_worker_from_library();
 
                             self.reloader_state = ReloaderState::Ready;
+                            self.dismissed_errors.clear();
+                            self.expanded_errors.clear();
 
                             // Spawn background cleanup thread: join the old
                             // (draining) worker, then drop the retired library.
@@ -552,6 +565,16 @@ where
                             s
                         )
                     }
+                }
+                Task::none()
+            }
+            Message::DismissError(name) => {
+                self.dismissed_errors.insert(name);
+                Task::none()
+            }
+            Message::ToggleErrorDetail(name) => {
+                if !self.expanded_errors.remove(&name) {
+                    self.expanded_errors.insert(name);
                 }
                 Task::none()
             }
@@ -609,106 +632,118 @@ where
             }
         };
 
-        let function_state_widgets = |(r, g, b, a), fn_name, error| {
-            let function_name = Text::new(fn_name)
-                .style(move |_| Style {
-                    color: Some(Color::from_rgba8(r, g, b, a)),
-                })
-                .size(12);
-
-            let error_block = Text::new(error)
-                .style(|_| Style {
-                    color: Some(Color::from_rgba8(225, 29, 72, 1.0)),
-                })
-                .size(12);
-
-            column![function_name, error_block].spacing(2)
-        };
-
-        let function_widget = |fn_state, fn_name| match fn_state {
-            &FunctionState::Static => {
-                function_state_widgets((255, 255, 255, 1.0), fn_name, String::new())
-            }
-            &FunctionState::Hot => {
-                function_state_widgets((74, 222, 128, 1.0), fn_name, String::new())
-            }
-            &FunctionState::FallBackStatic(ref err) => {
-                function_state_widgets((255, 152, 0, 1.0), fn_name, err.clone())
-            }
-            &FunctionState::Error(ref err) => {
-                function_state_widgets((225, 29, 72, 1.0), fn_name, err.clone())
-            }
-        };
-
-        let view_fn = Container::new(function_widget(&view_fn_state, "View")).padding(3);
-        let update_fn = Container::new(function_widget(&self.update_fn_state, "Update")).padding(3);
-
+        // Collect all function states and filter to errors only.
         let sub_fn_state = self
             .subscription_fn_state
             .try_lock()
             .map(|m| m.clone())
             .unwrap_or(FunctionState::Static);
-        let subscription_fn =
-            Container::new(function_widget(&sub_fn_state, "Subscription")).padding(3);
-
         let theme_fn_state = self
             .theme_fn_state
             .try_lock()
             .map(|m| m.clone())
             .unwrap_or(FunctionState::Static);
-        let theme_fn = Container::new(function_widget(&theme_fn_state, "Theme")).padding(3);
-
         let style_fn_state = self
             .style_fn_state
             .try_lock()
             .map(|m| m.clone())
             .unwrap_or(FunctionState::Static);
-        let style_fn = Container::new(function_widget(&style_fn_state, "Style")).padding(3);
-
         let scale_factor_fn_state = self
             .scale_factor_fn_state
             .try_lock()
             .map(|m| m.clone())
             .unwrap_or(FunctionState::Static);
-        let scale_factor_fn =
-            Container::new(function_widget(&scale_factor_fn_state, "ScaleFactor")).padding(3);
-
         let title_fn_state = self
             .title_fn_state
             .try_lock()
             .map(|m| m.clone())
             .unwrap_or(FunctionState::Static);
-        let title_fn = Container::new(function_widget(&title_fn_state, "Title")).padding(3);
 
-        let function_states = row![
-            space().width(Length::Fill),
-            view_fn,
-            update_fn,
-            subscription_fn,
-            theme_fn,
-            style_fn,
-            title_fn,
-            scale_factor_fn,
-            space().width(Length::Fill)
-        ]
-        .spacing(50)
-        .padding(Padding {
-            left: 20.,
-            right: 20.,
-            ..Default::default()
-        });
+        let all_states: Vec<(&str, &FunctionState)> = vec![
+            ("View", &view_fn_state),
+            ("Update", &self.update_fn_state),
+            ("Subscription", &sub_fn_state),
+            ("Theme", &theme_fn_state),
+            ("Style", &style_fn_state),
+            ("Title", &title_fn_state),
+            ("ScaleFactor", &scale_factor_fn_state),
+        ];
 
-        let top_bar = with_default_theme(
-            Container::new(function_states)
-                .style(|_| ContainerStyle {
-                    background: Some(Background::Color(Color::BLACK)),
-                    ..Default::default()
-                })
-                .width(Length::Fill)
-                .into(),
-        );
+        // Collect errors that haven't been dismissed.
+        let visible_errors: Vec<(&str, String)> = all_states
+            .iter()
+            .filter_map(|(name, state)| {
+                let err_msg = match state {
+                    FunctionState::Error(err) | FunctionState::FallBackStatic(err) => err.clone(),
+                    _ => return None,
+                };
+                if self.dismissed_errors.contains(*name) {
+                    return None;
+                }
+                Some((*name, err_msg))
+            })
+            .collect();
 
-        column![top_bar, program_view].into()
+        if visible_errors.is_empty() {
+            column![program_view].into()
+        } else {
+            // Build the error bar using the default iced Theme via themer().
+            let mut error_col = column![].spacing(2);
+            for (name, err_msg) in &visible_errors {
+                let expanded = self.expanded_errors.contains(*name);
+                let name_string = name.to_string();
+                let toggle_label = if expanded { "Show less" } else { "Read more" };
+
+                let summary = row![
+                    Text::new(format!("Error: {}", name))
+                        .style(|_| TextStyle {
+                            color: Some(Color::from_rgba8(225, 29, 72, 1.0)),
+                        })
+                        .size(13),
+                    space().width(Length::Fill),
+                    button(Text::new(toggle_label).size(12))
+                        .on_press(Message::ToggleErrorDetail(name_string.clone()))
+                        .style(button::text),
+                    button(Text::new("X").size(12))
+                        .on_press(Message::DismissError(name_string))
+                        .style(button::text),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+
+                if expanded {
+                    error_col = error_col.push(
+                        column![
+                            summary,
+                            Text::new(err_msg.clone())
+                                .style(|_| TextStyle {
+                                    color: Some(Color::from_rgba8(225, 29, 72, 0.7)),
+                                })
+                                .size(11),
+                        ]
+                        .spacing(4),
+                    );
+                } else {
+                    error_col = error_col.push(summary);
+                }
+            }
+
+            let error_bar = with_default_theme(Element::from(
+                container(error_col)
+                    .style(|_| ContainerStyle {
+                        background: Some(Background::Color(Color::from_rgba8(30, 0, 0, 0.95))),
+                        ..Default::default()
+                    })
+                    .width(Length::Fill)
+                    .padding(Padding {
+                        top: 6.,
+                        bottom: 6.,
+                        left: 16.,
+                        right: 16.,
+                    }),
+            ));
+            column![error_bar, program_view].into()
+        }
     }
 
     pub fn subscription(&self, program: &P) -> Subscription<Message<P>> {
