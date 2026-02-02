@@ -328,6 +328,16 @@ impl LibReloader {
                             Ok(events) => events,
                         };
 
+                        // Ignore Access events (Open/Read/Close) — they don't
+                        // indicate file content changed and fire continuously
+                        // after reload when the library is memory-mapped.
+                        let dominated_by_access = events
+                            .iter()
+                            .all(|e| matches!(e.kind, notify::EventKind::Access(_)));
+                        if dominated_by_access {
+                            continue;
+                        }
+
                         log::debug!("file change events: {events:?}");
                         let was_removed =
                             events
