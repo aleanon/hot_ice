@@ -1,21 +1,14 @@
 #![feature(downcast_unchecked)]
 #![feature(min_specialization)]
 
-mod boot;
 #[cfg(target_os = "macos")]
 mod codesign;
 pub mod erased_executor;
 mod error;
+mod functions;
 mod hot_application;
 mod hot_program;
-mod hot_scale_factor;
 mod hot_state;
-mod hot_style;
-mod hot_subscription;
-mod hot_theme;
-mod hot_title;
-mod hot_update;
-mod hot_view;
 mod into_result;
 mod lib_reloader;
 mod message;

@@ -13,15 +13,17 @@ use iced_futures::Executor;
 use iced_winit::{Error, runtime::Task};
 
 use crate::{
-    boot,
+    functions::{
+        boot,
+        hot_scale_factor::IntoHotScaleFactor,
+        hot_style::IntoHotStyle,
+        hot_subscription::IntoHotSubscription,
+        hot_theme::IntoHotTheme,
+        hot_title::IntoHotTitle,
+        hot_update::{self, HotUpdate},
+        hot_view::{self, HotView},
+    },
     hot_program::{self, HotProgram},
-    hot_scale_factor::IntoHotScaleFactor,
-    hot_style::IntoHotStyle,
-    hot_subscription::IntoHotSubscription,
-    hot_theme::IntoHotTheme,
-    hot_title::IntoHotTitle,
-    hot_update::{self, HotUpdate},
-    hot_view::{self, HotView},
     lib_reloader::LibReloader,
     message::{DynMessage, MessageSource},
     reloader::{FunctionState, Reload, ReloaderSettings},
