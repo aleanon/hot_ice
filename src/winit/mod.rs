@@ -20,7 +20,6 @@ pub use iced_program as program;
 pub use iced_program::core;
 pub use iced_program::graphics;
 pub use iced_program::runtime;
-pub use iced_runtime::futures;
 pub use winit;
 
 pub use iced_winit::clipboard;
@@ -1678,7 +1677,7 @@ where
 
 /// Returns true if the provided event should cause a [`Program`] to
 /// exit.
-pub fn user_force_quit(
+pub fn _user_force_quit(
     event: &winit::event::WindowEvent,
     _modifiers: winit::keyboard::ModifiersState,
 ) -> bool {
