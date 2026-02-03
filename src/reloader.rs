@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -243,6 +243,8 @@ where
     AppMessage(MessageSource<P::Message>),
     DismissError(String),
     ToggleErrorDetail(String),
+    StartErrorTimer(u64),
+    AutoDismissErrors(u64),
 }
 
 impl<P> Clone for Message<P>
@@ -260,6 +262,8 @@ where
             Self::Error(error) => Self::Error(error.clone()),
             Self::DismissError(name) => Self::DismissError(name.clone()),
             Self::ToggleErrorDetail(name) => Self::ToggleErrorDetail(name.clone()),
+            Self::StartErrorTimer(generation) => Self::StartErrorTimer(*generation),
+            Self::AutoDismissErrors(generation) => Self::AutoDismissErrors(*generation),
         }
     }
 }
@@ -275,6 +279,8 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::Error(error) => write!(f, "{}", error),
             Self::DismissError(name) => write!(f, "DismissError({})", name),
             Self::ToggleErrorDetail(name) => write!(f, "ToggleErrorDetail({})", name),
+            Self::StartErrorTimer(generation) => write!(f, "StartErrorTimer({})", generation),
+            Self::AutoDismissErrors(generation) => write!(f, "AutoDismissErrors({})", generation),
         }
     }
 }
@@ -326,8 +332,10 @@ pub struct Reloader<P: HotProgram + 'static> {
     title_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
     loaded_fonts: Vec<Cow<'static, [u8]>>,
-    dismissed_errors: HashSet<String>,
+    dismissed_errors: HashMap<String, String>,
     expanded_errors: HashSet<String>,
+    error_generation: u64,
+    error_sensor_key: u16,
 }
 
 impl<'a, P> Reloader<P>
@@ -362,8 +370,10 @@ where
             title_fn_state: Mutex::new(FunctionState::Static),
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
             loaded_fonts: fonts,
-            dismissed_errors: HashSet::new(),
+            dismissed_errors: HashMap::new(),
             expanded_errors: HashSet::new(),
+            error_generation: 0,
+            error_sensor_key: 0,
         };
 
         let task = if reloader_settings.compile_in_reloader {
@@ -523,6 +533,8 @@ where
                             self.reloader_state = ReloaderState::Ready;
                             self.dismissed_errors.clear();
                             self.expanded_errors.clear();
+                            self.error_generation = 0;
+                            self.error_sensor_key = 0;
 
                             // Spawn background cleanup thread: join the old
                             // (draining) worker, then drop the retired library.
@@ -569,12 +581,38 @@ where
                 Task::none()
             }
             Message::DismissError(name) => {
-                self.dismissed_errors.insert(name);
+                if let Some(msg) = self.get_error_message(&name) {
+                    self.dismissed_errors.insert(name, msg);
+                }
+                self.error_generation += 1;
+                self.error_sensor_key = self.error_sensor_key.wrapping_add(1);
                 Task::none()
             }
             Message::ToggleErrorDetail(name) => {
                 if !self.expanded_errors.remove(&name) {
                     self.expanded_errors.insert(name);
+                }
+                Task::none()
+            }
+            Message::StartErrorTimer(generation) => {
+                if generation == self.error_generation {
+                    Task::future(async move {
+                        futures_timer::Delay::new(Duration::from_secs(10)).await;
+                        Message::AutoDismissErrors(generation)
+                    })
+                } else {
+                    Task::none()
+                }
+            }
+            Message::AutoDismissErrors(generation) => {
+                if generation == self.error_generation {
+                    self.collect_visible_error_messages()
+                        .into_iter()
+                        .for_each(|(name, msg)| {
+                            self.dismissed_errors.insert(name, msg);
+                        });
+                    self.error_generation += 1;
+                    self.error_sensor_key = self.error_sensor_key.wrapping_add(1);
                 }
                 Task::none()
             }
@@ -669,7 +707,7 @@ where
             ("ScaleFactor", &scale_factor_fn_state),
         ];
 
-        // Collect errors that haven't been dismissed.
+        // Collect errors that haven't been dismissed (or whose message changed).
         let visible_errors: Vec<(&str, String)> = all_states
             .iter()
             .filter_map(|(name, state)| {
@@ -677,7 +715,7 @@ where
                     FunctionState::Error(err) | FunctionState::FallBackStatic(err) => err.clone(),
                     _ => return None,
                 };
-                if self.dismissed_errors.contains(*name) {
+                if self.dismissed_errors.get(*name) == Some(&err_msg) {
                     return None;
                 }
                 Some((*name, err_msg))
@@ -728,19 +766,24 @@ where
                 }
             }
 
+            let generation = self.error_generation;
+            let error_container = container(error_col)
+                .style(|_| ContainerStyle {
+                    background: Some(Background::Color(Color::BLACK)),
+                    ..Default::default()
+                })
+                .width(Length::Fill)
+                .padding(Padding {
+                    top: 6.,
+                    bottom: 6.,
+                    left: 16.,
+                    right: 16.,
+                });
+
             let error_bar = with_default_theme(Element::from(
-                container(error_col)
-                    .style(|_| ContainerStyle {
-                        background: Some(Background::Color(Color::from_rgba8(30, 0, 0, 0.95))),
-                        ..Default::default()
-                    })
-                    .width(Length::Fill)
-                    .padding(Padding {
-                        top: 6.,
-                        bottom: 6.,
-                        left: 16.,
-                        right: 16.,
-                    }),
+                sensor(error_container)
+                    .key(self.error_sensor_key)
+                    .on_show(move |_| Message::StartErrorTimer(generation)),
             ));
             column![error_bar, program_view].into()
         }
@@ -846,6 +889,61 @@ where
             log::error!("Failed to get lock on scale_factor_fn_state");
         };
         1.0
+    }
+
+    fn get_error_message(&self, name: &str) -> Option<String> {
+        let state = match name {
+            "Update" => Some(&self.update_fn_state),
+            _ => None,
+        };
+        if let Some(FunctionState::Error(msg) | FunctionState::FallBackStatic(msg)) = state {
+            return Some(msg.clone());
+        }
+        let mutex_state = match name {
+            "Subscription" => Some(&self.subscription_fn_state),
+            "Theme" => Some(&self.theme_fn_state),
+            "Style" => Some(&self.style_fn_state),
+            "Title" => Some(&self.title_fn_state),
+            "ScaleFactor" => Some(&self.scale_factor_fn_state),
+            _ => None,
+        };
+        if let Some(mutex) = mutex_state {
+            if let Ok(state) = mutex.lock() {
+                if let FunctionState::Error(msg) | FunctionState::FallBackStatic(msg) = &*state {
+                    return Some(msg.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn collect_visible_error_messages(&self) -> Vec<(String, String)> {
+        let names_and_states: Vec<(&str, Option<FunctionState>)> = vec![
+            ("Update", Some(self.update_fn_state.clone())),
+            (
+                "Subscription",
+                self.subscription_fn_state.lock().ok().map(|s| s.clone()),
+            ),
+            ("Theme", self.theme_fn_state.lock().ok().map(|s| s.clone())),
+            ("Style", self.style_fn_state.lock().ok().map(|s| s.clone())),
+            ("Title", self.title_fn_state.lock().ok().map(|s| s.clone())),
+            (
+                "ScaleFactor",
+                self.scale_factor_fn_state.lock().ok().map(|s| s.clone()),
+            ),
+        ];
+        names_and_states
+            .into_iter()
+            .filter_map(|(name, state)| {
+                let state = state?;
+                match state {
+                    FunctionState::Error(msg) | FunctionState::FallBackStatic(msg) => {
+                        Some((name.to_string(), msg))
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     fn build_library(
