@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt::Debug,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -25,7 +25,10 @@ use iced_widget::{
     Text, button, column, container, container::Style as ContainerStyle, row, sensor, space,
     text::Style as TextStyle, themer,
 };
-use iced_winit::{program::Program, runtime::Task};
+use iced_winit::{
+    program::Program,
+    runtime::{Task, task},
+};
 use log::info;
 use thiserror::Error;
 
@@ -241,10 +244,10 @@ where
     SendReadySignal,
     Error(ReloaderError),
     AppMessage(MessageSource<P::Message>),
-    DismissError(String),
-    ToggleErrorDetail(String),
-    StartErrorTimer(u64),
-    AutoDismissErrors(u64),
+    ErrorShown(HotFunction),
+    AutoDismissError(HotFunction),
+    DismissError(HotFunction),
+    ToggleErrorExpand(HotFunction),
 }
 
 impl<P> Clone for Message<P>
@@ -260,10 +263,10 @@ where
             Self::ReloadComplete(r) => Self::ReloadComplete(r.clone()),
             Self::CompilationComplete => Self::CompilationComplete,
             Self::Error(error) => Self::Error(error.clone()),
-            Self::DismissError(name) => Self::DismissError(name.clone()),
-            Self::ToggleErrorDetail(name) => Self::ToggleErrorDetail(name.clone()),
-            Self::StartErrorTimer(generation) => Self::StartErrorTimer(*generation),
-            Self::AutoDismissErrors(generation) => Self::AutoDismissErrors(*generation),
+            Self::ErrorShown(func) => Self::ErrorShown(*func),
+            Self::AutoDismissError(func) => Self::AutoDismissError(*func),
+            Self::DismissError(func) => Self::DismissError(*func),
+            Self::ToggleErrorExpand(func) => Self::ToggleErrorExpand(*func),
         }
     }
 }
@@ -277,10 +280,10 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::ReloadComplete(_) => write!(f, "ReloadComplete"),
             Self::CompilationComplete => write!(f, "CompilationComplete"),
             Self::Error(error) => write!(f, "{}", error),
-            Self::DismissError(name) => write!(f, "DismissError({})", name),
-            Self::ToggleErrorDetail(name) => write!(f, "ToggleErrorDetail({})", name),
-            Self::StartErrorTimer(generation) => write!(f, "StartErrorTimer({})", generation),
-            Self::AutoDismissErrors(generation) => write!(f, "AutoDismissErrors({})", generation),
+            Self::ErrorShown(func) => write!(f, "ErrorShown({})", func),
+            Self::AutoDismissError(func) => write!(f, "AutoDismissError({})", func),
+            Self::DismissError(func) => write!(f, "DismissError({})", func),
+            Self::ToggleErrorExpand(func) => write!(f, "ToggleErrorExpand({})", func),
         }
     }
 }
@@ -289,10 +292,35 @@ pub struct ReadyToReload;
 
 #[derive(Clone)]
 pub enum FunctionState {
+    None,
     Static,
     Hot,
     FallBackStatic(String),
     Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotFunction {
+    View,
+    Update,
+    Subscription,
+    Theme,
+    Style,
+    Title,
+    ScaleFactor,
+}
+
+impl std::fmt::Display for HotFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+struct ErrorEntry {
+    message: String,
+    handle: Option<task::Handle>,
+    sensor_key: u16,
+    expanded: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -323,7 +351,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     pending_drain: Option<DrainHandle>,
     reloader_settings: ReloaderSettings,
     lib_name: &'static str,
-    sensor_key: u16,
+    reloading_sensor_key: u16,
     update_fn_state: FunctionState,
     subscription_fn_state: Mutex<FunctionState>,
     theme_fn_state: Mutex<FunctionState>,
@@ -332,10 +360,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     title_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
     loaded_fonts: Vec<Cow<'static, [u8]>>,
-    dismissed_errors: HashMap<String, String>,
-    expanded_errors: HashSet<String>,
-    error_generation: u64,
-    error_sensor_key: u16,
+    active_errors: Mutex<HashMap<HotFunction, ErrorEntry>>,
 }
 
 impl<'a, P> Reloader<P>
@@ -361,7 +386,7 @@ where
             pending_drain: None,
             reloader_settings: reloader_settings.clone(),
             lib_name,
-            sensor_key: 0,
+            reloading_sensor_key: 0,
             update_fn_state: FunctionState::Static,
             subscription_fn_state: Mutex::new(FunctionState::Static),
             theme_fn_state: Mutex::new(FunctionState::Static),
@@ -370,10 +395,7 @@ where
             title_fn_state: Mutex::new(FunctionState::Static),
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
             loaded_fonts: fonts,
-            dismissed_errors: HashMap::new(),
-            expanded_errors: HashSet::new(),
-            error_generation: 0,
-            error_sensor_key: 0,
+            active_errors: Mutex::new(HashMap::new()),
         };
 
         let task = if reloader_settings.compile_in_reloader {
@@ -424,6 +446,7 @@ where
                     )
                     .map(Message::AppMessage);
 
+                self.sync_error_state(HotFunction::Update, &self.update_fn_state);
                 self.intercept_app_task(app_task)
             }
             Message::CompilationComplete => {
@@ -494,7 +517,7 @@ where
                     }
                     _ => self.reloader_state = ReloaderState::Reloading(1),
                 }
-                self.sensor_key += 1;
+                self.reloading_sensor_key += 1;
                 Task::none()
             }
             Message::SendReadySignal => {
@@ -531,10 +554,14 @@ where
                             self.start_worker_from_library();
 
                             self.reloader_state = ReloaderState::Ready;
-                            self.dismissed_errors.clear();
-                            self.expanded_errors.clear();
-                            self.error_generation = 0;
-                            self.error_sensor_key = 0;
+                            if let Ok(mut errors) = self.active_errors.lock() {
+                                for entry in errors.values() {
+                                    if let Some(h) = &entry.handle {
+                                        h.abort();
+                                    }
+                                }
+                                errors.clear();
+                            }
 
                             // Spawn background cleanup thread: join the old
                             // (draining) worker, then drop the retired library.
@@ -580,39 +607,61 @@ where
                 }
                 Task::none()
             }
-            Message::DismissError(name) => {
-                if let Some(msg) = self.get_error_message(&name) {
-                    self.dismissed_errors.insert(name, msg);
-                }
-                self.error_generation += 1;
-                self.error_sensor_key = self.error_sensor_key.wrapping_add(1);
-                Task::none()
-            }
-            Message::ToggleErrorDetail(name) => {
-                if !self.expanded_errors.remove(&name) {
-                    self.expanded_errors.insert(name);
-                }
-                Task::none()
-            }
-            Message::StartErrorTimer(generation) => {
-                if generation == self.error_generation {
-                    Task::future(async move {
+            Message::ErrorShown(func) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                if let Some(entry) = errors.get_mut(&func) {
+                    if let Some(h) = entry.handle.take() {
+                        h.abort();
+                    }
+                    let (task, handle) = Task::future(async move {
                         futures_timer::Delay::new(Duration::from_secs(10)).await;
-                        Message::AutoDismissErrors(generation)
+                        Message::AutoDismissError(func)
                     })
+                    .abortable();
+                    entry.handle = Some(handle);
+                    drop(errors);
+                    task
                 } else {
                     Task::none()
                 }
             }
-            Message::AutoDismissErrors(generation) => {
-                if generation == self.error_generation {
-                    self.collect_visible_error_messages()
-                        .into_iter()
-                        .for_each(|(name, msg)| {
-                            self.dismissed_errors.insert(name, msg);
-                        });
-                    self.error_generation += 1;
-                    self.error_sensor_key = self.error_sensor_key.wrapping_add(1);
+            Message::AutoDismissError(func) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                errors.remove(&func);
+                Task::none()
+            }
+            Message::DismissError(func) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                if let Some(entry) = errors.remove(&func) {
+                    if let Some(h) = &entry.handle {
+                        h.abort();
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleErrorExpand(func) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                if let Some(entry) = errors.get_mut(&func) {
+                    entry.expanded = !entry.expanded;
+                    if entry.expanded {
+                        // Expanding — abort countdown so it stays visible
+                        if let Some(h) = entry.handle.take() {
+                            h.abort();
+                        }
+                    } else {
+                        // Collapsing — restart countdown
+                        if let Some(h) = entry.handle.take() {
+                            h.abort();
+                        }
+                        let (task, handle) = Task::future(async move {
+                            futures_timer::Delay::new(Duration::from_secs(10)).await;
+                            Message::AutoDismissError(func)
+                        })
+                        .abortable();
+                        entry.handle = Some(handle);
+                        drop(errors);
+                        return task;
+                    }
                 }
                 Task::none()
             }
@@ -638,18 +687,22 @@ where
 
         let mut view_fn_state = FunctionState::Static;
         let program_view = match &self.reloader_state {
-            ReloaderState::Ready => program
-                .view(
-                    &self.state,
-                    window,
-                    &mut view_fn_state,
-                    self.lib_reloader.as_ref(),
-                )
-                .map(Message::AppMessage),
+            ReloaderState::Ready => {
+                let view = program
+                    .view(
+                        &self.state,
+                        window,
+                        &mut view_fn_state,
+                        self.lib_reloader.as_ref(),
+                    )
+                    .map(Message::AppMessage);
+                self.sync_error_state(HotFunction::View, &view_fn_state);
+                view
+            }
             ReloaderState::Reloading(_) => {
                 let reloading_message = container(
                     sensor(Text::new("Reloading...").size(20))
-                        .key(self.sensor_key)
+                        .key(self.reloading_sensor_key)
                         .on_show(|_| Message::SendReadySignal),
                 )
                 .center(Length::Fill);
@@ -670,120 +723,73 @@ where
             }
         };
 
-        // Collect all function states and filter to errors only.
-        let sub_fn_state = self
-            .subscription_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let theme_fn_state = self
-            .theme_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let style_fn_state = self
-            .style_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let scale_factor_fn_state = self
-            .scale_factor_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let title_fn_state = self
-            .title_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-
-        let all_states: Vec<(&str, &FunctionState)> = vec![
-            ("View", &view_fn_state),
-            ("Update", &self.update_fn_state),
-            ("Subscription", &sub_fn_state),
-            ("Theme", &theme_fn_state),
-            ("Style", &style_fn_state),
-            ("Title", &title_fn_state),
-            ("ScaleFactor", &scale_factor_fn_state),
-        ];
-
-        // Collect errors that haven't been dismissed (or whose message changed).
-        let visible_errors: Vec<(&str, String)> = all_states
-            .iter()
-            .filter_map(|(name, state)| {
-                let err_msg = match state {
-                    FunctionState::Error(err) | FunctionState::FallBackStatic(err) => err.clone(),
-                    _ => return None,
-                };
-                if self.dismissed_errors.get(*name) == Some(&err_msg) {
-                    return None;
-                }
-                Some((*name, err_msg))
-            })
-            .collect();
-
-        if visible_errors.is_empty() {
+        // Build error bar from active_errors HashMap.
+        let errors = self.active_errors.lock().unwrap();
+        if errors.is_empty() {
+            drop(errors);
             column![program_view].into()
         } else {
-            // Build the error bar using the default iced Theme via themer().
             let mut error_col = column![].spacing(2);
-            for (name, err_msg) in &visible_errors {
-                let expanded = self.expanded_errors.contains(*name);
-                let name_string = name.to_string();
-                let toggle_label = if expanded { "Show less" } else { "Read more" };
+            for (&func, entry) in errors.iter() {
+                let toggle_label = if entry.expanded {
+                    "Show less"
+                } else {
+                    "Read more"
+                };
 
                 let summary = row![
-                    Text::new(format!("Error: {}", name))
+                    Text::new(format!("Error: {}", func))
                         .style(|_| TextStyle {
                             color: Some(Color::from_rgba8(225, 29, 72, 1.0)),
                         })
                         .size(13),
                     space().width(Length::Fill),
                     button(Text::new(toggle_label).size(12))
-                        .on_press(Message::ToggleErrorDetail(name_string.clone()))
+                        .on_press(Message::ToggleErrorExpand(func))
                         .style(button::text),
                     button(Text::new("X").size(12))
-                        .on_press(Message::DismissError(name_string))
+                        .on_press(Message::DismissError(func))
                         .style(button::text),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center);
 
-                if expanded {
-                    error_col = error_col.push(
-                        column![
-                            summary,
-                            Text::new(err_msg.clone())
-                                .style(|_| TextStyle {
-                                    color: Some(Color::from_rgba8(225, 29, 72, 0.7)),
-                                })
-                                .size(11),
-                        ]
-                        .spacing(4),
-                    );
+                let error_row = if entry.expanded {
+                    column![
+                        summary,
+                        Text::new(entry.message.clone())
+                            .style(|_| TextStyle {
+                                color: Some(Color::from_rgba8(225, 29, 72, 0.7)),
+                            })
+                            .size(11),
+                    ]
+                    .spacing(4)
                 } else {
-                    error_col = error_col.push(summary);
-                }
-            }
+                    column![summary]
+                };
 
-            let generation = self.error_generation;
-            let error_container = container(error_col)
-                .style(|_| ContainerStyle {
-                    background: Some(Background::Color(Color::BLACK)),
-                    ..Default::default()
-                })
-                .width(Length::Fill)
-                .padding(Padding {
-                    top: 6.,
-                    bottom: 6.,
-                    left: 16.,
-                    right: 16.,
-                });
+                let sensor_key = entry.sensor_key;
+                error_col = error_col.push(
+                    sensor(error_row)
+                        .key(sensor_key)
+                        .on_show(move |_| Message::ErrorShown(func)),
+                );
+            }
+            drop(errors);
 
             let error_bar = with_default_theme(Element::from(
-                sensor(error_container)
-                    .key(self.error_sensor_key)
-                    .on_show(move |_| Message::StartErrorTimer(generation)),
+                container(error_col)
+                    .style(|_| ContainerStyle {
+                        background: Some(Background::Color(Color::BLACK)),
+                        ..Default::default()
+                    })
+                    .width(Length::Fill)
+                    .padding(Padding {
+                        top: 6.,
+                        bottom: 6.,
+                        left: 16.,
+                        right: 16.,
+                    }),
             ));
             column![error_bar, program_view].into()
         }
@@ -793,9 +799,11 @@ where
         match self.subscription_fn_state.try_lock() {
             Ok(mut fn_state) => {
                 if self.reloader_state == ReloaderState::Ready {
-                    program
+                    let sub = program
                         .subscription(&self.state, &mut fn_state, self.lib_reloader.as_ref())
-                        .map(Message::AppMessage)
+                        .map(Message::AppMessage);
+                    self.sync_error_state(HotFunction::Subscription, &fn_state);
+                    sub
                 } else {
                     #[cfg(feature = "verbose")]
                     log::error!("Called subscription when Reloader was not ready");
@@ -813,12 +821,14 @@ where
     pub fn title(&self, program: &P, window: window::Id) -> String {
         if let Ok(mut title_fn_state) = self.title_fn_state.lock() {
             if self.reloader_state == ReloaderState::Ready {
-                return program.title(
+                let title = program.title(
                     &self.state,
                     window,
                     &mut title_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+                self.sync_error_state(HotFunction::Title, &title_fn_state);
+                return title;
             } else {
                 #[cfg(feature = "verbose")]
                 log::error!("Called title when Reloader was not ready");
@@ -838,12 +848,14 @@ where
         };
 
         if self.reloader_state == ReloaderState::Ready {
-            return program.theme(
+            let theme = program.theme(
                 &self.state,
                 window,
                 &mut theme_fn_state,
                 self.lib_reloader.as_ref(),
             );
+            self.sync_error_state(HotFunction::Theme, &theme_fn_state);
+            return theme;
         } else {
             #[cfg(feature = "verbose")]
             log::error!("Called theme when Reloader was not ready");
@@ -854,12 +866,14 @@ where
     pub fn style(&self, program: &P, theme: &P::Theme) -> theme::Style {
         if let Ok(mut style_fn_state) = self.style_fn_state.lock() {
             if self.reloader_state == ReloaderState::Ready {
-                return program.style(
+                let style = program.style(
                     &self.state,
                     theme,
                     &mut style_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+                self.sync_error_state(HotFunction::Style, &style_fn_state);
+                return style;
             } else {
                 #[cfg(feature = "verbose")]
                 log::error!("Called style when Reloader was not ready");
@@ -874,12 +888,14 @@ where
     pub fn scale_factor(&self, program: &P, window: window::Id) -> f32 {
         if let Ok(mut scale_factor_fn_state) = self.scale_factor_fn_state.lock() {
             if self.reloader_state == ReloaderState::Ready {
-                return program.scale_factor(
+                let factor = program.scale_factor(
                     &self.state,
                     window,
                     &mut scale_factor_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+                self.sync_error_state(HotFunction::ScaleFactor, &scale_factor_fn_state);
+                return factor;
             } else {
                 #[cfg(feature = "verbose")]
                 log::error!("Called scale_factor when Reloader was not ready");
@@ -891,59 +907,40 @@ where
         1.0
     }
 
-    fn get_error_message(&self, name: &str) -> Option<String> {
-        let state = match name {
-            "Update" => Some(&self.update_fn_state),
-            _ => None,
+    fn sync_error_state(&self, func: HotFunction, fn_state: &FunctionState) {
+        let Ok(mut errors) = self.active_errors.lock() else {
+            return;
         };
-        if let Some(FunctionState::Error(msg) | FunctionState::FallBackStatic(msg)) = state {
-            return Some(msg.clone());
-        }
-        let mutex_state = match name {
-            "Subscription" => Some(&self.subscription_fn_state),
-            "Theme" => Some(&self.theme_fn_state),
-            "Style" => Some(&self.style_fn_state),
-            "Title" => Some(&self.title_fn_state),
-            "ScaleFactor" => Some(&self.scale_factor_fn_state),
-            _ => None,
-        };
-        if let Some(mutex) = mutex_state {
-            if let Ok(state) = mutex.lock() {
-                if let FunctionState::Error(msg) | FunctionState::FallBackStatic(msg) = &*state {
-                    return Some(msg.clone());
+        match fn_state {
+            FunctionState::Error(msg) => {
+                use std::collections::hash_map::Entry;
+                match errors.entry(func) {
+                    Entry::Occupied(mut e) => {
+                        if e.get().message != *msg {
+                            if let Some(h) = &e.get().handle {
+                                h.abort();
+                            }
+                            let old_key = e.get().sensor_key;
+                            e.insert(ErrorEntry {
+                                message: msg.clone(),
+                                handle: None,
+                                sensor_key: old_key.wrapping_add(1),
+                                expanded: false,
+                            });
+                        }
+                    }
+                    Entry::Vacant(e) => {
+                        e.insert(ErrorEntry {
+                            message: msg.clone(),
+                            handle: None,
+                            sensor_key: 0,
+                            expanded: false,
+                        });
+                    }
                 }
             }
+            _ => {}
         }
-        None
-    }
-
-    fn collect_visible_error_messages(&self) -> Vec<(String, String)> {
-        let names_and_states: Vec<(&str, Option<FunctionState>)> = vec![
-            ("Update", Some(self.update_fn_state.clone())),
-            (
-                "Subscription",
-                self.subscription_fn_state.lock().ok().map(|s| s.clone()),
-            ),
-            ("Theme", self.theme_fn_state.lock().ok().map(|s| s.clone())),
-            ("Style", self.style_fn_state.lock().ok().map(|s| s.clone())),
-            ("Title", self.title_fn_state.lock().ok().map(|s| s.clone())),
-            (
-                "ScaleFactor",
-                self.scale_factor_fn_state.lock().ok().map(|s| s.clone()),
-            ),
-        ];
-        names_and_states
-            .into_iter()
-            .filter_map(|(name, state)| {
-                let state = state?;
-                match state {
-                    FunctionState::Error(msg) | FunctionState::FallBackStatic(msg) => {
-                        Some((name.to_string(), msg))
-                    }
-                    _ => None,
-                }
-            })
-            .collect()
     }
 
     fn build_library(
