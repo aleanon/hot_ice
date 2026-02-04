@@ -16,18 +16,20 @@ use hot_ice_common::{
     SERIALIZE_STATE_FUNCTION_NAME,
 };
 use iced_core::{
-    Alignment, Background, Color, Element, Length, Padding, Settings, Theme,
+    Alignment, Animation, Background, Color, Element, Length, Padding, Settings, Theme,
+    animation::Easing,
     theme::{self, Base, Mode},
+    time::Instant,
     window,
 };
 use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{
-    Text, button, column, container, container::Style as ContainerStyle, row, sensor, space,
+    Stack, Text, button, column, container, container::Style as ContainerStyle, row, sensor, space,
     text::Style as TextStyle, themer,
 };
 use iced_winit::{
     program::Program,
-    runtime::{Task, task},
+    runtime::{Action, Task, task, window as runtime_window},
 };
 use log::info;
 use thiserror::Error;
@@ -248,6 +250,7 @@ where
     AutoDismissError(HotFunction),
     DismissError(HotFunction),
     ToggleErrorExpand(HotFunction),
+    AnimationTick(Instant),
 }
 
 impl<P> Clone for Message<P>
@@ -267,6 +270,7 @@ where
             Self::AutoDismissError(func) => Self::AutoDismissError(*func),
             Self::DismissError(func) => Self::DismissError(*func),
             Self::ToggleErrorExpand(func) => Self::ToggleErrorExpand(*func),
+            Self::AnimationTick(t) => Self::AnimationTick(*t),
         }
     }
 }
@@ -284,6 +288,7 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::AutoDismissError(func) => write!(f, "AutoDismissError({})", func),
             Self::DismissError(func) => write!(f, "DismissError({})", func),
             Self::ToggleErrorExpand(func) => write!(f, "ToggleErrorExpand({})", func),
+            Self::AnimationTick(_) => write!(f, "AnimationTick"),
         }
     }
 }
@@ -321,6 +326,8 @@ struct ErrorEntry {
     handle: Option<task::Handle>,
     sensor_key: u16,
     expanded: bool,
+    animation: Animation<bool>,
+    dismissing: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -446,8 +453,13 @@ where
                     )
                     .map(Message::AppMessage);
 
-                self.sync_error_state(HotFunction::Update, &self.update_fn_state);
-                self.intercept_app_task(app_task)
+                let changed = self.sync_error_state(HotFunction::Update, &self.update_fn_state);
+                let app_result = self.intercept_app_task(app_task);
+                if changed {
+                    Task::batch([app_result, Self::request_redraw()])
+                } else {
+                    app_result
+                }
             }
             Message::CompilationComplete => {
                 let mut lib_reloader = LibReloader::new(
@@ -610,6 +622,9 @@ where
             Message::ErrorShown(func) => {
                 let mut errors = self.active_errors.lock().unwrap();
                 if let Some(entry) = errors.get_mut(&func) {
+                    if entry.dismissing {
+                        return Task::none();
+                    }
                     if let Some(h) = entry.handle.take() {
                         h.abort();
                     }
@@ -625,19 +640,19 @@ where
                     Task::none()
                 }
             }
-            Message::AutoDismissError(func) => {
+            Message::AutoDismissError(func) | Message::DismissError(func) => {
                 let mut errors = self.active_errors.lock().unwrap();
-                errors.remove(&func);
-                Task::none()
-            }
-            Message::DismissError(func) => {
-                let mut errors = self.active_errors.lock().unwrap();
-                if let Some(entry) = errors.remove(&func) {
-                    if let Some(h) = &entry.handle {
+                if let Some(entry) = errors.get_mut(&func) {
+                    if let Some(h) = entry.handle.take() {
                         h.abort();
                     }
+                    if !entry.dismissing {
+                        entry.dismissing = true;
+                        entry.animation.go_mut(false, Instant::now());
+                    }
                 }
-                Task::none()
+                drop(errors);
+                Self::request_redraw()
             }
             Message::ToggleErrorExpand(func) => {
                 let mut errors = self.active_errors.lock().unwrap();
@@ -663,6 +678,20 @@ where
                         return task;
                     }
                 }
+                Task::none()
+            }
+            Message::AnimationTick(now) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                errors.retain(|_, entry| {
+                    if entry.dismissing && !entry.animation.is_animating(now) {
+                        if let Some(h) = entry.handle.take() {
+                            h.abort();
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
                 Task::none()
             }
         }
@@ -724,13 +753,27 @@ where
         };
 
         // Build error bar from active_errors HashMap.
+        let now = Instant::now();
         let errors = self.active_errors.lock().unwrap();
         if errors.is_empty() {
             drop(errors);
-            column![program_view].into()
+            program_view
         } else {
             let mut error_col = column![].spacing(2);
+            let mut max_t: f32 = 0.0;
+
             for (&func, entry) in errors.iter() {
+                let t: f32 = entry.animation.interpolate(0.0f32, 1.0f32, now);
+                if t < 0.001 && entry.dismissing {
+                    continue;
+                }
+                if t > max_t {
+                    max_t = t;
+                }
+
+                let text_alpha = t;
+                let detail_alpha = 0.7 * t;
+
                 let toggle_label = if entry.expanded {
                     "Show less"
                 } else {
@@ -739,8 +782,8 @@ where
 
                 let summary = row![
                     Text::new(format!("Error: {}", func))
-                        .style(|_| TextStyle {
-                            color: Some(Color::from_rgba8(225, 29, 72, 1.0)),
+                        .style(move |_| TextStyle {
+                            color: Some(Color::from_rgba8(225, 29, 72, text_alpha)),
                         })
                         .size(13),
                     space().width(Length::Fill),
@@ -758,8 +801,8 @@ where
                     column![
                         summary,
                         Text::new(entry.message.clone())
-                            .style(|_| TextStyle {
-                                color: Some(Color::from_rgba8(225, 29, 72, 0.7)),
+                            .style(move |_| TextStyle {
+                                color: Some(Color::from_rgba8(225, 29, 72, detail_alpha)),
                             })
                             .size(11),
                     ]
@@ -779,8 +822,13 @@ where
 
             let error_bar = with_default_theme(Element::from(
                 container(error_col)
-                    .style(|_| ContainerStyle {
-                        background: Some(Background::Color(Color::BLACK)),
+                    .style(move |_| ContainerStyle {
+                        background: Some(Background::Color(Color::from_rgba(
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.85 * max_t,
+                        ))),
                         ..Default::default()
                     })
                     .width(Length::Fill)
@@ -791,12 +839,18 @@ where
                         right: 16.,
                     }),
             ));
-            column![error_bar, program_view].into()
+
+            Stack::new()
+                .push(program_view)
+                .push(error_bar)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         }
     }
 
     pub fn subscription(&self, program: &P) -> Subscription<Message<P>> {
-        match self.subscription_fn_state.try_lock() {
+        let app_sub = match self.subscription_fn_state.try_lock() {
             Ok(mut fn_state) => {
                 if self.reloader_state == ReloaderState::Ready {
                     let sub = program
@@ -815,6 +869,23 @@ where
                 log::error!("Failed to get lock on subscription_fn_state");
                 Subscription::none()
             }
+        };
+
+        let needs_frames = {
+            let now = Instant::now();
+            self.active_errors
+                .lock()
+                .map(|errors| errors.values().any(|e| e.animation.is_animating(now)))
+                .unwrap_or(false)
+        };
+
+        if needs_frames {
+            Subscription::batch([
+                app_sub,
+                runtime_window::frames().map(Message::AnimationTick),
+            ])
+        } else {
+            app_sub
         }
     }
 
@@ -907,39 +978,75 @@ where
         1.0
     }
 
-    fn sync_error_state(&self, func: HotFunction, fn_state: &FunctionState) {
+    fn request_redraw() -> Task<Message<P>> {
+        task::effect(Action::Window(runtime_window::Action::RedrawAll))
+    }
+
+    fn sync_error_state(&self, func: HotFunction, fn_state: &FunctionState) -> bool {
         let Ok(mut errors) = self.active_errors.lock() else {
-            return;
+            return false;
         };
+        let now = Instant::now();
         match fn_state {
             FunctionState::Error(msg) => {
                 use std::collections::hash_map::Entry;
                 match errors.entry(func) {
                     Entry::Occupied(mut e) => {
-                        if e.get().message != *msg {
+                        if e.get().dismissing {
+                            // Was being dismissed but error came back — re-animate in
                             if let Some(h) = &e.get().handle {
                                 h.abort();
                             }
                             let old_key = e.get().sensor_key;
+                            let mut anim = Animation::new(false).quick().easing(Easing::EaseOut);
+                            anim.go_mut(true, now);
                             e.insert(ErrorEntry {
                                 message: msg.clone(),
                                 handle: None,
                                 sensor_key: old_key.wrapping_add(1),
                                 expanded: false,
+                                animation: anim,
+                                dismissing: false,
                             });
+                            return true;
                         }
+                        if e.get().message != *msg {
+                            // Error message changed — new error
+                            if let Some(h) = &e.get().handle {
+                                h.abort();
+                            }
+                            let old_key = e.get().sensor_key;
+                            let mut anim = Animation::new(false).quick().easing(Easing::EaseOut);
+                            anim.go_mut(true, now);
+                            e.insert(ErrorEntry {
+                                message: msg.clone(),
+                                handle: None,
+                                sensor_key: old_key.wrapping_add(1),
+                                expanded: false,
+                                animation: anim,
+                                dismissing: false,
+                            });
+                            return true;
+                        }
+                        // Same error persisting — leave as-is
+                        false
                     }
                     Entry::Vacant(e) => {
+                        let mut anim = Animation::new(false).quick().easing(Easing::EaseOut);
+                        anim.go_mut(true, now);
                         e.insert(ErrorEntry {
                             message: msg.clone(),
                             handle: None,
                             sensor_key: 0,
                             expanded: false,
+                            animation: anim,
+                            dismissing: false,
                         });
+                        true
                     }
                 }
             }
-            _ => {}
+            _ => false,
         }
     }
 

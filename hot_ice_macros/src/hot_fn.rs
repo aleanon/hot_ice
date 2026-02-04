@@ -373,7 +373,6 @@ fn update(hot_state: bool, is_hot: bool, item: proc_macro::TokenStream) -> proc_
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let original_fn_name_str = input.sig.ident.to_string();
     let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
@@ -400,15 +399,13 @@ fn update(hot_state: bool, is_hot: bool, item: proc_macro::TokenStream) -> proc_
                     .into_message()
                     .map_err(|m| hot_ice::macro_use::HotIceError::MessageDowncastError(::std::format!("{:?}", m)))?;
 
-                match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                match hot_ice::macro_use::catch_panic(|| {
                     Self::#inner_fn_ident(state.ref_mut_state(), message)
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                })) {
+                }) {
                     ::core::result::Result::Ok(task) => ::core::result::Result::Ok(task),
-                    ::core::result::Result::Err(err) => {
-
-                        ::std::mem::forget(err);
-                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                    ::core::result::Result::Err(err_msg) => {
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
                     }
                 }
             }
@@ -427,14 +424,13 @@ fn update(hot_state: bool, is_hot: bool, item: proc_macro::TokenStream) -> proc_
                 let message = message.into_message()
                     .map_err(|message| hot_ice::macro_use::HotIceError::MessageDowncastError(::std::format!("{:?}", message)))?;
 
-                match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                match hot_ice::macro_use::catch_panic(|| {
                     self.#inner_fn_ident(message)
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                })) {
+                }) {
                     ::core::result::Result::Ok(task) => ::core::result::Result::Ok(task),
-                    ::core::result::Result::Err(err) => {
-                        ::std::mem::forget(err);
-                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                    ::core::result::Result::Err(err_msg) => {
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
                     }
                 }
             }
@@ -453,7 +449,6 @@ fn view(
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let original_fn_name_str = input.sig.ident.to_string();
     let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
@@ -502,13 +497,12 @@ fn view(
             quote! {
                 #[unsafe(no_mangle)]
                 #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                         Self::#inner_fn_ident(state.ref_state())
-                    })) {
+                    }) {
                         ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err) => {
-                            ::std::mem::forget(err);
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                        ::core::result::Result::Err(err_msg) => {
+                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
                         }
                     })
                 }
@@ -521,14 +515,13 @@ fn view(
             quote! {
                 #[unsafe(no_mangle)]
                 #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                         Self::#inner_fn_ident(state.ref_state())
                             .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                    })) {
+                    }) {
                         ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err) => {
-                            ::std::mem::forget(err);
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                        ::core::result::Result::Err(err_msg) => {
+                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
                         }
                     })
                 }
@@ -543,13 +536,12 @@ fn view(
             quote! {
                 #[unsafe(no_mangle)]
                 #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                         self.#inner_fn_ident()
-                    })) {
+                    }) {
                         ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err) => {
-                            ::std::mem::forget(err);
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                        ::core::result::Result::Err(err_msg) => {
+                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
                         }
                     })
                 }
@@ -562,14 +554,13 @@ fn view(
             quote! {
                 #[unsafe(no_mangle)]
                 #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                         self.#inner_fn_ident()
                             .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                    })) {
+                    }) {
                         ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err) => {
-                            ::std::mem::forget(err);
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
+                        ::core::result::Result::Err(err_msg) => {
+                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
                         }
                     })
                 }
@@ -592,7 +583,6 @@ fn subscription(
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
-    let original_fn_name_str = input.sig.ident.to_string();
     let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
     input.sig.ident = inner_fn_ident.clone();
@@ -609,15 +599,12 @@ fn subscription(
         quote! {
             #no_mangle_attr
             #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage>> {
-                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                     Self::#inner_fn_ident(state.ref_state())
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                })) {
+                }) {
                     Ok(subscription) => Ok(subscription),
-                    Err(err) => {
-                        std::mem::forget(err);
-                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
-                    }
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
                 })
             }
             #input
@@ -626,15 +613,12 @@ fn subscription(
         quote! {
             #no_mangle_attr
             #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage>> {
-                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                     self.#inner_fn_ident()
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                })) {
+                }) {
                     Ok(subscription) => Ok(subscription),
-                    Err(err) => {
-                        std::mem::forget(err);
-                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
-                    }
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
                 })
             }
             #input
@@ -648,7 +632,6 @@ fn subscription(
 /// All fields are owned to avoid borrow conflicts when mutating the input function.
 struct SimpleFnInfo {
     original_fn_name: syn::Ident,
-    original_fn_name_str: String,
     inner_fn_ident: proc_macro2::Ident,
     vis: syn::Visibility,
     return_type: proc_macro2::TokenStream,
@@ -660,7 +643,6 @@ struct SimpleFnInfo {
 /// Clones all necessary data to avoid borrow conflicts.
 fn extract_simple_fn_info(input: &syn::ItemFn) -> SimpleFnInfo {
     let original_fn_name = input.sig.ident.clone();
-    let original_fn_name_str = input.sig.ident.to_string();
     let inner_fn_name = format!("{}_inner_{}", &input.sig.ident, INNER_FUNCTION_POSTFIX);
     let inner_fn_ident = proc_macro2::Ident::new(&inner_fn_name, proc_macro2::Span::call_site());
 
@@ -683,7 +665,6 @@ fn extract_simple_fn_info(input: &syn::ItemFn) -> SimpleFnInfo {
 
     SimpleFnInfo {
         original_fn_name,
-        original_fn_name_str,
         inner_fn_ident,
         vis,
         return_type,
@@ -697,7 +678,6 @@ fn extract_simple_fn_info(input: &syn::ItemFn) -> SimpleFnInfo {
 fn generate_simple_wrapper(hot_state: bool, mut input: syn::ItemFn) -> proc_macro::TokenStream {
     let SimpleFnInfo {
         original_fn_name,
-        original_fn_name_str,
         inner_fn_ident,
         vis,
         return_type,
@@ -711,12 +691,9 @@ fn generate_simple_wrapper(hot_state: bool, mut input: syn::ItemFn) -> proc_macr
         quote! {
             #[unsafe(no_mangle)]
             #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState, #(#args_no_receiver),*) -> hot_ice::macro_use::HotResult<#return_type> {
-                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*))) {
+                hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*)) {
                     Ok(result) => Ok(result),
-                    Err(err) => {
-                        std::mem::forget(err);
-                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
-                    }
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
                 })
             }
             #input
@@ -726,12 +703,9 @@ fn generate_simple_wrapper(hot_state: bool, mut input: syn::ItemFn) -> proc_macr
         quote! {
             #[unsafe(no_mangle)]
             #vis fn #original_fn_name(#original_inputs) -> hot_ice::macro_use::HotResult<#return_type> {
-                hot_ice::macro_use::HotResult(match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.#inner_fn_ident(#(#arg_names),*))) {
+                hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| self.#inner_fn_ident(#(#arg_names),*)) {
                     Ok(result) => Ok(result),
-                    Err(err) => {
-                        std::mem::forget(err);
-                        Err(hot_ice::macro_use::HotIceError::FunctionPaniced(#original_fn_name_str))
-                    }
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
                 })
             }
             #input
