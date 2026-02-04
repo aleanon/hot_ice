@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::HashMap,
     fmt::Debug,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -15,16 +16,21 @@ use hot_ice_common::{
     SERIALIZE_STATE_FUNCTION_NAME,
 };
 use iced_core::{
-    Background, Color, Element, Length, Padding, Settings, Theme,
+    Alignment, Animation, Background, Color, Element, Length, Padding, Settings, Theme,
+    animation::Easing,
     theme::{self, Base, Mode},
+    time::Instant,
     window,
 };
 use iced_futures::{Subscription, futures::Stream, stream};
 use iced_widget::{
-    Container, Text, column, container, container::Style as ContainerStyle, row, sensor, space,
-    text::Style, themer,
+    Stack, Text, button, column, container, container::Style as ContainerStyle, row, sensor, space,
+    text::Style as TextStyle, themer,
 };
-use iced_winit::{program::Program, runtime::Task};
+use iced_winit::{
+    program::Program,
+    runtime::{Action, Task, task, window as runtime_window},
+};
 use log::info;
 use thiserror::Error;
 
@@ -240,6 +246,11 @@ where
     SendReadySignal,
     Error(ReloaderError),
     AppMessage(MessageSource<P::Message>),
+    ErrorShown(HotFunction),
+    AutoDismissError(HotFunction),
+    DismissError(HotFunction),
+    ToggleErrorExpand(HotFunction),
+    AnimationTick(Instant),
 }
 
 impl<P> Clone for Message<P>
@@ -255,6 +266,11 @@ where
             Self::ReloadComplete(r) => Self::ReloadComplete(r.clone()),
             Self::CompilationComplete => Self::CompilationComplete,
             Self::Error(error) => Self::Error(error.clone()),
+            Self::ErrorShown(func) => Self::ErrorShown(*func),
+            Self::AutoDismissError(func) => Self::AutoDismissError(*func),
+            Self::DismissError(func) => Self::DismissError(*func),
+            Self::ToggleErrorExpand(func) => Self::ToggleErrorExpand(*func),
+            Self::AnimationTick(t) => Self::AnimationTick(*t),
         }
     }
 }
@@ -268,6 +284,11 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::ReloadComplete(_) => write!(f, "ReloadComplete"),
             Self::CompilationComplete => write!(f, "CompilationComplete"),
             Self::Error(error) => write!(f, "{}", error),
+            Self::ErrorShown(func) => write!(f, "ErrorShown({})", func),
+            Self::AutoDismissError(func) => write!(f, "AutoDismissError({})", func),
+            Self::DismissError(func) => write!(f, "DismissError({})", func),
+            Self::ToggleErrorExpand(func) => write!(f, "ToggleErrorExpand({})", func),
+            Self::AnimationTick(_) => write!(f, "AnimationTick"),
         }
     }
 }
@@ -276,10 +297,37 @@ pub struct ReadyToReload;
 
 #[derive(Clone)]
 pub enum FunctionState {
+    None,
     Static,
     Hot,
     FallBackStatic(String),
     Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotFunction {
+    View,
+    Update,
+    Subscription,
+    Theme,
+    Style,
+    Title,
+    ScaleFactor,
+}
+
+impl std::fmt::Display for HotFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+struct ErrorEntry {
+    message: String,
+    handle: Option<task::Handle>,
+    sensor_key: u16,
+    expanded: bool,
+    animation: Animation<bool>,
+    dismissing: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -310,7 +358,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     pending_drain: Option<DrainHandle>,
     reloader_settings: ReloaderSettings,
     lib_name: &'static str,
-    sensor_key: u16,
+    reloading_sensor_key: u16,
     update_fn_state: FunctionState,
     subscription_fn_state: Mutex<FunctionState>,
     theme_fn_state: Mutex<FunctionState>,
@@ -319,6 +367,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     title_fn_state: Mutex<FunctionState>,
     update_channel: UpdateChannel,
     loaded_fonts: Vec<Cow<'static, [u8]>>,
+    active_errors: Mutex<HashMap<HotFunction, ErrorEntry>>,
 }
 
 impl<'a, P> Reloader<P>
@@ -344,7 +393,7 @@ where
             pending_drain: None,
             reloader_settings: reloader_settings.clone(),
             lib_name,
-            sensor_key: 0,
+            reloading_sensor_key: 0,
             update_fn_state: FunctionState::Static,
             subscription_fn_state: Mutex::new(FunctionState::Static),
             theme_fn_state: Mutex::new(FunctionState::Static),
@@ -353,6 +402,7 @@ where
             title_fn_state: Mutex::new(FunctionState::Static),
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
             loaded_fonts: fonts,
+            active_errors: Mutex::new(HashMap::new()),
         };
 
         let task = if reloader_settings.compile_in_reloader {
@@ -403,7 +453,13 @@ where
                     )
                     .map(Message::AppMessage);
 
-                self.intercept_app_task(app_task)
+                let changed = self.sync_error_state(HotFunction::Update, &self.update_fn_state);
+                let app_result = self.intercept_app_task(app_task);
+                if changed {
+                    Task::batch([app_result, Self::request_redraw()])
+                } else {
+                    app_result
+                }
             }
             Message::CompilationComplete => {
                 let mut lib_reloader = LibReloader::new(
@@ -473,7 +529,7 @@ where
                     }
                     _ => self.reloader_state = ReloaderState::Reloading(1),
                 }
-                self.sensor_key += 1;
+                self.reloading_sensor_key += 1;
                 Task::none()
             }
             Message::SendReadySignal => {
@@ -510,6 +566,14 @@ where
                             self.start_worker_from_library();
 
                             self.reloader_state = ReloaderState::Ready;
+                            if let Ok(mut errors) = self.active_errors.lock() {
+                                for entry in errors.values() {
+                                    if let Some(h) = &entry.handle {
+                                        h.abort();
+                                    }
+                                }
+                                errors.clear();
+                            }
 
                             // Spawn background cleanup thread: join the old
                             // (draining) worker, then drop the retired library.
@@ -555,6 +619,81 @@ where
                 }
                 Task::none()
             }
+            Message::ErrorShown(func) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                if let Some(entry) = errors.get_mut(&func) {
+                    if entry.dismissing {
+                        return Task::none();
+                    }
+                    if let Some(h) = entry.handle.take() {
+                        h.abort();
+                    }
+                    let (task, handle) = Task::future(async move {
+                        futures_timer::Delay::new(Duration::from_secs(10)).await;
+                        Message::AutoDismissError(func)
+                    })
+                    .abortable();
+                    entry.handle = Some(handle);
+                    drop(errors);
+                    task
+                } else {
+                    Task::none()
+                }
+            }
+            Message::AutoDismissError(func) | Message::DismissError(func) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                if let Some(entry) = errors.get_mut(&func) {
+                    if let Some(h) = entry.handle.take() {
+                        h.abort();
+                    }
+                    if !entry.dismissing {
+                        entry.dismissing = true;
+                        entry.animation.go_mut(false, Instant::now());
+                    }
+                }
+                drop(errors);
+                Self::request_redraw()
+            }
+            Message::ToggleErrorExpand(func) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                if let Some(entry) = errors.get_mut(&func) {
+                    entry.expanded = !entry.expanded;
+                    if entry.expanded {
+                        // Expanding — abort countdown so it stays visible
+                        if let Some(h) = entry.handle.take() {
+                            h.abort();
+                        }
+                    } else {
+                        // Collapsing — restart countdown
+                        if let Some(h) = entry.handle.take() {
+                            h.abort();
+                        }
+                        let (task, handle) = Task::future(async move {
+                            futures_timer::Delay::new(Duration::from_secs(10)).await;
+                            Message::AutoDismissError(func)
+                        })
+                        .abortable();
+                        entry.handle = Some(handle);
+                        drop(errors);
+                        return task;
+                    }
+                }
+                Task::none()
+            }
+            Message::AnimationTick(now) => {
+                let mut errors = self.active_errors.lock().unwrap();
+                errors.retain(|_, entry| {
+                    if entry.dismissing && !entry.animation.is_animating(now) {
+                        if let Some(h) = entry.handle.take() {
+                            h.abort();
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+                Task::none()
+            }
         }
     }
 
@@ -577,18 +716,22 @@ where
 
         let mut view_fn_state = FunctionState::Static;
         let program_view = match &self.reloader_state {
-            ReloaderState::Ready => program
-                .view(
-                    &self.state,
-                    window,
-                    &mut view_fn_state,
-                    self.lib_reloader.as_ref(),
-                )
-                .map(Message::AppMessage),
+            ReloaderState::Ready => {
+                let view = program
+                    .view(
+                        &self.state,
+                        window,
+                        &mut view_fn_state,
+                        self.lib_reloader.as_ref(),
+                    )
+                    .map(Message::AppMessage);
+                self.sync_error_state(HotFunction::View, &view_fn_state);
+                view
+            }
             ReloaderState::Reloading(_) => {
                 let reloading_message = container(
                     sensor(Text::new("Reloading...").size(20))
-                        .key(self.sensor_key)
+                        .key(self.reloading_sensor_key)
                         .on_show(|_| Message::SendReadySignal),
                 )
                 .center(Length::Fill);
@@ -609,115 +752,112 @@ where
             }
         };
 
-        let function_state_widgets = |(r, g, b, a), fn_name, error| {
-            let function_name = Text::new(fn_name)
-                .style(move |_| Style {
-                    color: Some(Color::from_rgba8(r, g, b, a)),
-                })
-                .size(12);
+        // Build error bar from active_errors HashMap.
+        let now = Instant::now();
+        let errors = self.active_errors.lock().unwrap();
+        if errors.is_empty() {
+            drop(errors);
+            program_view
+        } else {
+            let mut error_col = column![].spacing(2);
+            let mut max_t: f32 = 0.0;
 
-            let error_block = Text::new(error)
-                .style(|_| Style {
-                    color: Some(Color::from_rgba8(225, 29, 72, 1.0)),
-                })
-                .size(12);
+            for (&func, entry) in errors.iter() {
+                let t: f32 = entry.animation.interpolate(0.0f32, 1.0f32, now);
+                if t < 0.001 && entry.dismissing {
+                    continue;
+                }
+                if t > max_t {
+                    max_t = t;
+                }
 
-            column![function_name, error_block].spacing(2)
-        };
+                let text_alpha = t;
+                let detail_alpha = 0.7 * t;
 
-        let function_widget = |fn_state, fn_name| match fn_state {
-            &FunctionState::Static => {
-                function_state_widgets((255, 255, 255, 1.0), fn_name, String::new())
+                let toggle_label = if entry.expanded {
+                    "Show less"
+                } else {
+                    "Read more"
+                };
+
+                let summary = row![
+                    Text::new(format!("Error: {}", func))
+                        .style(move |_| TextStyle {
+                            color: Some(Color::from_rgba8(225, 29, 72, text_alpha)),
+                        })
+                        .size(13),
+                    space().width(Length::Fill),
+                    button(Text::new(toggle_label).size(12))
+                        .on_press(Message::ToggleErrorExpand(func))
+                        .style(button::text),
+                    button(Text::new("X").size(12))
+                        .on_press(Message::DismissError(func))
+                        .style(button::text),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+
+                let error_row = if entry.expanded {
+                    column![
+                        summary,
+                        Text::new(entry.message.clone())
+                            .style(move |_| TextStyle {
+                                color: Some(Color::from_rgba8(225, 29, 72, detail_alpha)),
+                            })
+                            .size(11),
+                    ]
+                    .spacing(4)
+                } else {
+                    column![summary]
+                };
+
+                let sensor_key = entry.sensor_key;
+                error_col = error_col.push(
+                    sensor(error_row)
+                        .key(sensor_key)
+                        .on_show(move |_| Message::ErrorShown(func)),
+                );
             }
-            &FunctionState::Hot => {
-                function_state_widgets((74, 222, 128, 1.0), fn_name, String::new())
-            }
-            &FunctionState::FallBackStatic(ref err) => {
-                function_state_widgets((255, 152, 0, 1.0), fn_name, err.clone())
-            }
-            &FunctionState::Error(ref err) => {
-                function_state_widgets((225, 29, 72, 1.0), fn_name, err.clone())
-            }
-        };
+            drop(errors);
 
-        let view_fn = Container::new(function_widget(&view_fn_state, "View")).padding(3);
-        let update_fn = Container::new(function_widget(&self.update_fn_state, "Update")).padding(3);
+            let error_bar = with_default_theme(Element::from(
+                container(error_col)
+                    .style(move |_| ContainerStyle {
+                        background: Some(Background::Color(Color::from_rgba(
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.85 * max_t,
+                        ))),
+                        ..Default::default()
+                    })
+                    .width(Length::Fill)
+                    .padding(Padding {
+                        top: 6.,
+                        bottom: 6.,
+                        left: 16.,
+                        right: 16.,
+                    }),
+            ));
 
-        let sub_fn_state = self
-            .subscription_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let subscription_fn =
-            Container::new(function_widget(&sub_fn_state, "Subscription")).padding(3);
-
-        let theme_fn_state = self
-            .theme_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let theme_fn = Container::new(function_widget(&theme_fn_state, "Theme")).padding(3);
-
-        let style_fn_state = self
-            .style_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let style_fn = Container::new(function_widget(&style_fn_state, "Style")).padding(3);
-
-        let scale_factor_fn_state = self
-            .scale_factor_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let scale_factor_fn =
-            Container::new(function_widget(&scale_factor_fn_state, "ScaleFactor")).padding(3);
-
-        let title_fn_state = self
-            .title_fn_state
-            .try_lock()
-            .map(|m| m.clone())
-            .unwrap_or(FunctionState::Static);
-        let title_fn = Container::new(function_widget(&title_fn_state, "Title")).padding(3);
-
-        let function_states = row![
-            space().width(Length::Fill),
-            view_fn,
-            update_fn,
-            subscription_fn,
-            theme_fn,
-            style_fn,
-            title_fn,
-            scale_factor_fn,
-            space().width(Length::Fill)
-        ]
-        .spacing(50)
-        .padding(Padding {
-            left: 20.,
-            right: 20.,
-            ..Default::default()
-        });
-
-        let top_bar = with_default_theme(
-            Container::new(function_states)
-                .style(|_| ContainerStyle {
-                    background: Some(Background::Color(Color::BLACK)),
-                    ..Default::default()
-                })
+            Stack::new()
+                .push(program_view)
+                .push(error_bar)
                 .width(Length::Fill)
-                .into(),
-        );
-
-        column![top_bar, program_view].into()
+                .height(Length::Fill)
+                .into()
+        }
     }
 
     pub fn subscription(&self, program: &P) -> Subscription<Message<P>> {
-        match self.subscription_fn_state.try_lock() {
+        let app_sub = match self.subscription_fn_state.try_lock() {
             Ok(mut fn_state) => {
                 if self.reloader_state == ReloaderState::Ready {
-                    program
+                    let sub = program
                         .subscription(&self.state, &mut fn_state, self.lib_reloader.as_ref())
-                        .map(Message::AppMessage)
+                        .map(Message::AppMessage);
+                    self.sync_error_state(HotFunction::Subscription, &fn_state);
+                    sub
                 } else {
                     #[cfg(feature = "verbose")]
                     log::error!("Called subscription when Reloader was not ready");
@@ -729,18 +869,37 @@ where
                 log::error!("Failed to get lock on subscription_fn_state");
                 Subscription::none()
             }
+        };
+
+        let needs_frames = {
+            let now = Instant::now();
+            self.active_errors
+                .lock()
+                .map(|errors| errors.values().any(|e| e.animation.is_animating(now)))
+                .unwrap_or(false)
+        };
+
+        if needs_frames {
+            Subscription::batch([
+                app_sub,
+                runtime_window::frames().map(Message::AnimationTick),
+            ])
+        } else {
+            app_sub
         }
     }
 
     pub fn title(&self, program: &P, window: window::Id) -> String {
         if let Ok(mut title_fn_state) = self.title_fn_state.lock() {
             if self.reloader_state == ReloaderState::Ready {
-                return program.title(
+                let title = program.title(
                     &self.state,
                     window,
                     &mut title_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+                self.sync_error_state(HotFunction::Title, &title_fn_state);
+                return title;
             } else {
                 #[cfg(feature = "verbose")]
                 log::error!("Called title when Reloader was not ready");
@@ -760,12 +919,14 @@ where
         };
 
         if self.reloader_state == ReloaderState::Ready {
-            return program.theme(
+            let theme = program.theme(
                 &self.state,
                 window,
                 &mut theme_fn_state,
                 self.lib_reloader.as_ref(),
             );
+            self.sync_error_state(HotFunction::Theme, &theme_fn_state);
+            return theme;
         } else {
             #[cfg(feature = "verbose")]
             log::error!("Called theme when Reloader was not ready");
@@ -776,12 +937,14 @@ where
     pub fn style(&self, program: &P, theme: &P::Theme) -> theme::Style {
         if let Ok(mut style_fn_state) = self.style_fn_state.lock() {
             if self.reloader_state == ReloaderState::Ready {
-                return program.style(
+                let style = program.style(
                     &self.state,
                     theme,
                     &mut style_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+                self.sync_error_state(HotFunction::Style, &style_fn_state);
+                return style;
             } else {
                 #[cfg(feature = "verbose")]
                 log::error!("Called style when Reloader was not ready");
@@ -796,12 +959,14 @@ where
     pub fn scale_factor(&self, program: &P, window: window::Id) -> f32 {
         if let Ok(mut scale_factor_fn_state) = self.scale_factor_fn_state.lock() {
             if self.reloader_state == ReloaderState::Ready {
-                return program.scale_factor(
+                let factor = program.scale_factor(
                     &self.state,
                     window,
                     &mut scale_factor_fn_state,
                     self.lib_reloader.as_ref(),
                 );
+                self.sync_error_state(HotFunction::ScaleFactor, &scale_factor_fn_state);
+                return factor;
             } else {
                 #[cfg(feature = "verbose")]
                 log::error!("Called scale_factor when Reloader was not ready");
@@ -811,6 +976,78 @@ where
             log::error!("Failed to get lock on scale_factor_fn_state");
         };
         1.0
+    }
+
+    fn request_redraw() -> Task<Message<P>> {
+        task::effect(Action::Window(runtime_window::Action::RedrawAll))
+    }
+
+    fn sync_error_state(&self, func: HotFunction, fn_state: &FunctionState) -> bool {
+        let Ok(mut errors) = self.active_errors.lock() else {
+            return false;
+        };
+        let now = Instant::now();
+        match fn_state {
+            FunctionState::Error(msg) => {
+                use std::collections::hash_map::Entry;
+                match errors.entry(func) {
+                    Entry::Occupied(mut e) => {
+                        if e.get().dismissing {
+                            // Was being dismissed but error came back — re-animate in
+                            if let Some(h) = &e.get().handle {
+                                h.abort();
+                            }
+                            let old_key = e.get().sensor_key;
+                            let mut anim = Animation::new(false).quick().easing(Easing::EaseOut);
+                            anim.go_mut(true, now);
+                            e.insert(ErrorEntry {
+                                message: msg.clone(),
+                                handle: None,
+                                sensor_key: old_key.wrapping_add(1),
+                                expanded: false,
+                                animation: anim,
+                                dismissing: false,
+                            });
+                            return true;
+                        }
+                        if e.get().message != *msg {
+                            // Error message changed — new error
+                            if let Some(h) = &e.get().handle {
+                                h.abort();
+                            }
+                            let old_key = e.get().sensor_key;
+                            let mut anim = Animation::new(false).quick().easing(Easing::EaseOut);
+                            anim.go_mut(true, now);
+                            e.insert(ErrorEntry {
+                                message: msg.clone(),
+                                handle: None,
+                                sensor_key: old_key.wrapping_add(1),
+                                expanded: false,
+                                animation: anim,
+                                dismissing: false,
+                            });
+                            return true;
+                        }
+                        // Same error persisting — leave as-is
+                        false
+                    }
+                    Entry::Vacant(e) => {
+                        let mut anim = Animation::new(false).quick().easing(Easing::EaseOut);
+                        anim.go_mut(true, now);
+                        e.insert(ErrorEntry {
+                            message: msg.clone(),
+                            handle: None,
+                            sensor_key: 0,
+                            expanded: false,
+                            animation: anim,
+                            dismissing: false,
+                        });
+                        true
+                    }
+                }
+            }
+            _ => false,
+        }
     }
 
     fn build_library(
