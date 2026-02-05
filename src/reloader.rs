@@ -22,7 +22,12 @@ use iced_core::{
     time::Instant,
     window,
 };
-use iced_futures::{Subscription, futures::Stream, stream};
+use iced_futures::{
+    BoxStream, Subscription,
+    futures::{Stream, StreamExt},
+    stream,
+    subscription::{self as iced_subscription, EventStream, Hasher, Recipe},
+};
 use iced_widget::{
     Stack, Text, button, column, container, container::Style as ContainerStyle, row, sensor, space,
     text::Style as TextStyle, themer,
@@ -330,6 +335,42 @@ struct ErrorEntry {
     dismissing: bool,
 }
 
+/// Wrapper recipe that routes subscription streams to the cdylib worker.
+///
+/// When the tracker calls `stream()`, this recipe:
+/// 1. Gets the inner recipe's stream
+/// 2. Maps items to `Action::Output` and sends to the worker
+/// 3. Returns `pending()` to keep the tracker slot alive
+///
+/// Messages flow back to the event loop via `Proxy::send_action()` in the worker.
+struct WorkerRecipe<M: Send + 'static> {
+    inner: Box<dyn Recipe<Output = M>>,
+    worker: Arc<CdylibWorker<M>>,
+}
+
+impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
+    type Output = M;
+
+    fn hash(&self, state: &mut Hasher) {
+        // Delegate to inner recipe — preserves subscription identity
+        self.inner.hash(state);
+    }
+
+    fn stream(self: Box<Self>, input: EventStream) -> BoxStream<Self::Output> {
+        // Get the inner stream (this is what the app recipe produces)
+        let app_stream = self.inner.stream(input);
+
+        // Map Message → Action<Message> and send to worker
+        let action_stream = Box::pin(app_stream.map(Action::Output));
+        self.worker.run_stream(action_stream);
+
+        // Return a stream that never produces items — the tracker keeps
+        // this subscription alive by hash, but actual messages flow back
+        // via the worker's Proxy::send_action()
+        Box::pin(futures::stream::pending())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum ReloaderState {
     Compiling,
@@ -354,7 +395,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     serialized_state_len: usize,
     reloader_state: ReloaderState,
     lib_reloader: Option<Arc<Mutex<LibReloader>>>,
-    worker: Option<CdylibWorker<Message<P>>>,
+    worker: Option<Arc<CdylibWorker<Message<P>>>>,
     pending_drain: Option<DrainHandle>,
     reloader_settings: ReloaderSettings,
     lib_name: &'static str,
@@ -453,13 +494,8 @@ where
                     )
                     .map(Message::AppMessage);
 
-                let changed = self.sync_error_state(HotFunction::Update, &self.update_fn_state);
-                let app_result = self.intercept_app_task(app_task);
-                if changed {
-                    Task::batch([app_result, Self::request_redraw()])
-                } else {
-                    app_result
-                }
+                self.sync_error_state(HotFunction::Update, &self.update_fn_state);
+                self.intercept_app_task(app_task)
             }
             Message::CompilationComplete => {
                 let mut lib_reloader = LibReloader::new(
@@ -542,10 +578,27 @@ where
                 // to completion (or until timeout). The actual thread join
                 // happens later in a background cleanup thread spawned from
                 // ReloadComplete.
-                if let Some(worker) = self.worker.take() {
+                if let Some(worker_arc) = self.worker.take() {
                     log::info!("Beginning drain of cdylib worker before reload");
-                    let drain_handle = worker.begin_drain(self.reloader_settings.drain_timeout);
-                    self.pending_drain = Some(drain_handle);
+                    // Try to get sole ownership of the worker. Since WorkerRecipe
+                    // instances are transient (consumed by stream()), we should
+                    // have sole ownership here. If not, drop the Arc and let the
+                    // worker clean up when all refs are gone.
+                    match Arc::try_unwrap(worker_arc) {
+                        Ok(worker) => {
+                            let drain_handle =
+                                worker.begin_drain(self.reloader_settings.drain_timeout);
+                            self.pending_drain = Some(drain_handle);
+                        }
+                        Err(_arc) => {
+                            log::warn!(
+                                "Worker had outstanding references during shutdown, \
+                                 dropping without drain"
+                            );
+                            // The Arc is dropped here; worker continues until all
+                            // refs are gone and channel is closed
+                        }
+                    }
                 }
 
                 self.update_channel
@@ -652,7 +705,7 @@ where
                     }
                 }
                 drop(errors);
-                Self::request_redraw()
+                Task::none()
             }
             Message::ToggleErrorExpand(func) => {
                 let mut errors = self.active_errors.lock().unwrap();
@@ -871,6 +924,26 @@ where
             }
         };
 
+        // Wrap app recipes to run on the cdylib worker. This ensures that
+        // tokio::spawn() and similar calls inside subscription streams find
+        // the cdylib's executor TLS context, not the host binary's.
+        let app_sub = if let Some(worker) = &self.worker {
+            let recipes = iced_subscription::into_recipes(app_sub);
+            if recipes.is_empty() {
+                Subscription::none()
+            } else {
+                let wrapped = recipes.into_iter().map(|recipe| {
+                    iced_subscription::from_recipe(WorkerRecipe {
+                        inner: recipe,
+                        worker: Arc::clone(worker),
+                    })
+                });
+                Subscription::batch(wrapped)
+            }
+        } else {
+            app_sub
+        };
+
         let needs_frames = {
             let now = Instant::now();
             self.active_errors
@@ -899,7 +972,7 @@ where
                     self.lib_reloader.as_ref(),
                 );
                 self.sync_error_state(HotFunction::Title, &title_fn_state);
-                return title;
+                return format!("Reloading: {}", title);
             } else {
                 #[cfg(feature = "verbose")]
                 log::error!("Called title when Reloader was not ready");
@@ -908,7 +981,7 @@ where
             #[cfg(feature = "verbose")]
             log::error!("Failed to get lock on title_fn_state");
         };
-        String::from("Hot Ice")
+        String::from("Reloader")
     }
 
     pub fn theme(&self, program: &P, window: window::Id) -> Option<P::Theme> {
@@ -978,13 +1051,9 @@ where
         1.0
     }
 
-    fn request_redraw() -> Task<Message<P>> {
-        task::effect(Action::Window(runtime_window::Action::RedrawAll))
-    }
-
-    fn sync_error_state(&self, func: HotFunction, fn_state: &FunctionState) -> bool {
+    fn sync_error_state(&self, func: HotFunction, fn_state: &FunctionState) {
         let Ok(mut errors) = self.active_errors.lock() else {
-            return false;
+            return;
         };
         let now = Instant::now();
         match fn_state {
@@ -1008,7 +1077,6 @@ where
                                 animation: anim,
                                 dismissing: false,
                             });
-                            return true;
                         }
                         if e.get().message != *msg {
                             // Error message changed — new error
@@ -1026,10 +1094,7 @@ where
                                 animation: anim,
                                 dismissing: false,
                             });
-                            return true;
                         }
-                        // Same error persisting — leave as-is
-                        false
                     }
                     Entry::Vacant(e) => {
                         let mut anim = Animation::new(false).quick().easing(Easing::EaseOut);
@@ -1042,11 +1107,10 @@ where
                             animation: anim,
                             dismissing: false,
                         });
-                        true
                     }
                 }
             }
-            _ => false,
+            _ => {}
         }
     }
 
@@ -1437,7 +1501,7 @@ where
         match unsafe { CdylibWorker::start(&lib, proxy) } {
             Ok(worker) => {
                 log::info!("Started cdylib worker thread");
-                self.worker = Some(worker);
+                self.worker = Some(Arc::new(worker));
             }
             Err(err) => {
                 log::warn!("Failed to start worker from library: {}", err);
