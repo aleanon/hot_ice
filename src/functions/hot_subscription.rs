@@ -79,48 +79,23 @@ where
     pub fn subscription(
         &self,
         state: &State,
-        fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
-    ) -> Subscription<MessageSource<Message>> {
+    ) -> Result<(Subscription<MessageSource<Message>>, FunctionState), HotIceError> {
         let Some(reloader) = reloader else {
-            *fn_state = FunctionState::Static;
-            return match self.function.static_subscription(state) {
-                Ok(sub) => sub.map(MessageSource::Static),
-                Err(err) => {
-                    *fn_state = FunctionState::Error(err.to_string());
-                    Subscription::none()
-                }
-            };
+            let sub = self.function.static_subscription(state)?;
+            return Ok((sub.map(MessageSource::Static), FunctionState::Static));
         };
 
         match self
             .function
             .hot_subscription(state, reloader, self.function_name)
         {
-            Ok(task) => {
-                *fn_state = FunctionState::Hot;
-                task.map(MessageSource::Dynamic)
+            Ok(sub) => Ok((sub.map(MessageSource::Dynamic), FunctionState::Hot)),
+            Err(HotIceError::FunctionNotFound(_)) => {
+                let sub = self.function.static_subscription(state)?;
+                Ok((sub.map(MessageSource::Static), FunctionState::Static))
             }
-            Err(err) => {
-                match err {
-                    HotIceError::FunctionNotFound(_) => {
-                        return match self.function.static_subscription(state) {
-                            Ok(sub) => {
-                                *fn_state = FunctionState::Static;
-                                sub.map(MessageSource::Static)
-                            }
-                            Err(err) => {
-                                *fn_state = FunctionState::Error(err.to_string());
-                                Subscription::none()
-                            }
-                        };
-                    }
-                    _ => {}
-                }
-                log::error!("{}\nFallback to empty subscription", err);
-                *fn_state = FunctionState::Error(err.to_string());
-                Subscription::none()
-            }
+            Err(err) => Err(err),
         }
     }
 }

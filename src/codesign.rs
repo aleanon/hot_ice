@@ -5,9 +5,6 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-#[cfg(feature = "verbose")]
-use log;
-
 static CODESIGN_BIN: &str = "codesign";
 
 pub(crate) struct CodeSigner {

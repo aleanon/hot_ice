@@ -106,74 +106,33 @@ where
         }
     }
 
-    fn run_static(
+    pub fn update(
         &self,
         state: &mut State,
-        message: Message,
-        fn_state: &mut FunctionState,
-        new_fn_state: FunctionState,
-    ) -> Task<MessageSource<Message>> {
-        let result = self
-            .function
-            .static_update(state, message)
-            .map(|t| t.map(MessageSource::Static));
-
-        match result {
-            Ok(task) => {
-                *fn_state = new_fn_state;
-                task
-            }
-            Err(err) => {
-                *fn_state = FunctionState::Error(err.to_string());
-                Task::none()
-            }
-        }
-    }
-
-    pub fn update<'a>(
-        &self,
-        state: &'a mut State,
         message: MessageSource<Message>,
-        fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
-    ) -> Task<MessageSource<Message>> {
+    ) -> Result<(Task<MessageSource<Message>>, FunctionState), HotIceError> {
         match message {
             MessageSource::Static(message) => {
-                self.run_static(state, message, fn_state, FunctionState::Static)
+                let task = self.function.static_update(state, message)?;
+                Ok((task.map(MessageSource::Static), FunctionState::Static))
             }
             MessageSource::Dynamic(message) => {
                 let Some(reloader) = reloader else {
-                    return self.run_static(state, message, fn_state, FunctionState::Static);
+                    let task = self.function.static_update(state, message)?;
+                    return Ok((task.map(MessageSource::Static), FunctionState::Static));
                 };
 
                 match self
                     .function
                     .hot_update(state, message.clone(), reloader, self.function_name)
                 {
-                    Ok(task) => {
-                        *fn_state = FunctionState::Hot;
-                        task.map(MessageSource::Dynamic)
+                    Ok(task) => Ok((task.map(MessageSource::Dynamic), FunctionState::Hot)),
+                    Err(HotIceError::FunctionNotFound(_)) => {
+                        let task = self.function.static_update(state, message)?;
+                        Ok((task.map(MessageSource::Static), FunctionState::Static))
                     }
-                    Err(err) => {
-                        match err {
-                            HotIceError::FunctionNotFound(_) => {
-                                return match self.function.static_update(state, message) {
-                                    Ok(task) => {
-                                        *fn_state = FunctionState::Static;
-                                        task.map(MessageSource::Static)
-                                    }
-                                    Err(err) => {
-                                        *fn_state = FunctionState::Error(err.to_string());
-                                        Task::none()
-                                    }
-                                };
-                            }
-                            _ => {}
-                        }
-                        log::error!("update():{}", err);
-                        *fn_state = FunctionState::Error(err.to_string());
-                        Task::none()
-                    }
+                    Err(err) => Err(err),
                 }
             }
         }

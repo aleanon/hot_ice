@@ -485,17 +485,19 @@ where
                     return Task::none();
                 }
 
-                let app_task = program
-                    .update(
-                        &mut self.state,
-                        message,
-                        &mut self.update_fn_state,
-                        self.lib_reloader.as_ref(),
-                    )
-                    .map(Message::AppMessage);
-
-                self.sync_error_state(HotFunction::Update, &self.update_fn_state);
-                self.intercept_app_task(app_task)
+                match program.update(&mut self.state, message, self.lib_reloader.as_ref()) {
+                    Ok((task, fn_state)) => {
+                        self.update_fn_state = fn_state;
+                        self.sync_error_state(HotFunction::Update, &self.update_fn_state);
+                        self.intercept_app_task(task.map(Message::AppMessage))
+                    }
+                    Err(err) => {
+                        log::error!("update(): {}", err);
+                        self.update_fn_state = FunctionState::Error(err.to_string());
+                        self.sync_error_state(HotFunction::Update, &self.update_fn_state);
+                        Task::none()
+                    }
+                }
             }
             Message::CompilationComplete => {
                 let mut lib_reloader = LibReloader::new(
@@ -767,19 +769,25 @@ where
             themer(derive_theme(), content).into()
         };
 
-        let mut view_fn_state = FunctionState::Static;
         let program_view = match &self.reloader_state {
             ReloaderState::Ready => {
-                let view = program
-                    .view(
-                        &self.state,
-                        window,
-                        &mut view_fn_state,
-                        self.lib_reloader.as_ref(),
-                    )
-                    .map(Message::AppMessage);
-                self.sync_error_state(HotFunction::View, &view_fn_state);
-                view
+                match program.view(&self.state, window, self.lib_reloader.as_ref()) {
+                    Ok((element, fn_state)) => {
+                        let view_fn_state = fn_state;
+                        self.sync_error_state(HotFunction::View, &view_fn_state);
+                        element.map(Message::AppMessage)
+                    }
+                    Err(err) => {
+                        log::error!("view(): {}", err);
+                        let view_fn_state = FunctionState::Error(err.to_string());
+                        self.sync_error_state(HotFunction::View, &view_fn_state);
+                        with_default_theme(
+                            container(iced::widget::Text::new(err.to_string()))
+                                .center(Length::Fill)
+                                .into(),
+                        )
+                    }
+                }
             }
             ReloaderState::Reloading(_) => {
                 let reloading_message = container(
@@ -903,25 +911,28 @@ where
     }
 
     pub fn subscription(&self, program: &P) -> Subscription<Message<P>> {
-        let app_sub = match self.subscription_fn_state.try_lock() {
-            Ok(mut fn_state) => {
-                if self.reloader_state == ReloaderState::Ready {
-                    let sub = program
-                        .subscription(&self.state, &mut fn_state, self.lib_reloader.as_ref())
-                        .map(Message::AppMessage);
+        let app_sub = if self.reloader_state == ReloaderState::Ready {
+            match program.subscription(&self.state, self.lib_reloader.as_ref()) {
+                Ok((sub, fn_state)) => {
+                    if let Ok(mut state) = self.subscription_fn_state.try_lock() {
+                        *state = fn_state.clone();
+                    }
                     self.sync_error_state(HotFunction::Subscription, &fn_state);
-                    sub
-                } else {
-                    #[cfg(feature = "verbose")]
-                    log::error!("Called subscription when Reloader was not ready");
+                    sub.map(Message::AppMessage)
+                }
+                Err(err) => {
+                    log::error!("subscription(): {}", err);
+                    let fn_state = FunctionState::Error(err.to_string());
+                    if let Ok(mut state) = self.subscription_fn_state.try_lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::Subscription, &fn_state);
                     Subscription::none()
                 }
             }
-            Err(_) => {
-                #[cfg(feature = "verbose")]
-                log::error!("Failed to get lock on subscription_fn_state");
-                Subscription::none()
-            }
+        } else {
+            log::debug!("Called subscription when Reloader was not ready");
+            Subscription::none()
         };
 
         // Wrap app recipes to run on the cdylib worker. This ensures that
@@ -963,92 +974,107 @@ where
     }
 
     pub fn title(&self, program: &P, window: window::Id) -> String {
-        if let Ok(mut title_fn_state) = self.title_fn_state.lock() {
-            if self.reloader_state == ReloaderState::Ready {
-                let title = program.title(
-                    &self.state,
-                    window,
-                    &mut title_fn_state,
-                    self.lib_reloader.as_ref(),
-                );
-                self.sync_error_state(HotFunction::Title, &title_fn_state);
-                return format!("Reloading: {}", title);
-            } else {
-                #[cfg(feature = "verbose")]
-                log::error!("Called title when Reloader was not ready");
+        if self.reloader_state == ReloaderState::Ready {
+            match program.title(&self.state, window, self.lib_reloader.as_ref()) {
+                Ok((title, fn_state)) => {
+                    if let Ok(mut state) = self.title_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::Title, &fn_state);
+                    format!("Reloading: {}", title)
+                }
+                Err(err) => {
+                    log::error!("title(): {}", err);
+                    let fn_state = FunctionState::Error(err.to_string());
+                    if let Ok(mut state) = self.title_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::Title, &fn_state);
+                    "An ice-hot application".to_string()
+                }
             }
         } else {
-            #[cfg(feature = "verbose")]
-            log::error!("Failed to get lock on title_fn_state");
-        };
-        String::from("Reloader")
+            log::debug!("Called title when Reloader was not ready");
+            String::from("Reloader")
+        }
     }
 
     pub fn theme(&self, program: &P, window: window::Id) -> Option<P::Theme> {
-        let Ok(mut theme_fn_state) = self.theme_fn_state.lock() else {
-            #[cfg(feature = "verbose")]
-            log::error!("Failed to get lock on theme_fn_state");
-            return None;
-        };
-
         if self.reloader_state == ReloaderState::Ready {
-            let theme = program.theme(
-                &self.state,
-                window,
-                &mut theme_fn_state,
-                self.lib_reloader.as_ref(),
-            );
-            self.sync_error_state(HotFunction::Theme, &theme_fn_state);
-            return theme;
+            match program.theme(&self.state, window, self.lib_reloader.as_ref()) {
+                Ok((theme, fn_state)) => {
+                    if let Ok(mut state) = self.theme_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::Theme, &fn_state);
+                    theme
+                }
+                Err(err) => {
+                    log::error!("theme(): {}", err);
+                    let fn_state = FunctionState::Error(err.to_string());
+                    if let Ok(mut state) = self.theme_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::Theme, &fn_state);
+                    None
+                }
+            }
         } else {
-            #[cfg(feature = "verbose")]
-            log::error!("Called theme when Reloader was not ready");
+            log::debug!("Called theme when Reloader was not ready");
+            None
         }
-        None
     }
 
     pub fn style(&self, program: &P, theme: &P::Theme) -> theme::Style {
-        if let Ok(mut style_fn_state) = self.style_fn_state.lock() {
-            if self.reloader_state == ReloaderState::Ready {
-                let style = program.style(
-                    &self.state,
-                    theme,
-                    &mut style_fn_state,
-                    self.lib_reloader.as_ref(),
-                );
-                self.sync_error_state(HotFunction::Style, &style_fn_state);
-                return style;
-            } else {
-                #[cfg(feature = "verbose")]
-                log::error!("Called style when Reloader was not ready");
+        if self.reloader_state == ReloaderState::Ready {
+            match program.style(&self.state, theme, self.lib_reloader.as_ref()) {
+                Ok((style, fn_state)) => {
+                    if let Ok(mut state) = self.style_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::Style, &fn_state);
+                    style
+                }
+                Err(err) => {
+                    log::error!("style(): {}", err);
+                    let fn_state = FunctionState::Error(err.to_string());
+                    if let Ok(mut state) = self.style_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::Style, &fn_state);
+                    theme.base()
+                }
             }
         } else {
-            #[cfg(feature = "verbose")]
-            log::error!("Failed to get lock on style_fn_state");
-        };
-        theme.base()
+            log::debug!("Called style when Reloader was not ready");
+            theme.base()
+        }
     }
 
     pub fn scale_factor(&self, program: &P, window: window::Id) -> f32 {
-        if let Ok(mut scale_factor_fn_state) = self.scale_factor_fn_state.lock() {
-            if self.reloader_state == ReloaderState::Ready {
-                let factor = program.scale_factor(
-                    &self.state,
-                    window,
-                    &mut scale_factor_fn_state,
-                    self.lib_reloader.as_ref(),
-                );
-                self.sync_error_state(HotFunction::ScaleFactor, &scale_factor_fn_state);
-                return factor;
-            } else {
-                #[cfg(feature = "verbose")]
-                log::error!("Called scale_factor when Reloader was not ready");
+        if self.reloader_state == ReloaderState::Ready {
+            match program.scale_factor(&self.state, window, self.lib_reloader.as_ref()) {
+                Ok((factor, fn_state)) => {
+                    if let Ok(mut state) = self.scale_factor_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::ScaleFactor, &fn_state);
+                    factor
+                }
+                Err(err) => {
+                    log::error!("scale_factor(): {}", err);
+                    let fn_state = FunctionState::Error(err.to_string());
+                    if let Ok(mut state) = self.scale_factor_fn_state.lock() {
+                        *state = fn_state.clone();
+                    }
+                    self.sync_error_state(HotFunction::ScaleFactor, &fn_state);
+                    1.0
+                }
             }
         } else {
-            #[cfg(feature = "verbose")]
-            log::error!("Failed to get lock on scale_factor_fn_state");
-        };
-        1.0
+            log::debug!("Called scale_factor when Reloader was not ready");
+            1.0
+        }
     }
 
     fn sync_error_state(&self, func: HotFunction, fn_state: &FunctionState) {
@@ -1425,26 +1451,22 @@ where
 
     /// Sync all tracked fonts to the loaded library's font system
     fn sync_fonts_to_library(&self) {
-        #[cfg(feature = "verbose")]
-        log::info!(
+        log::debug!(
             "sync_fonts_to_library called with {} fonts",
             self.loaded_fonts.len()
         );
 
         let Some(lib_reloader) = &self.lib_reloader else {
-            #[cfg(feature = "verbose")]
-            log::warn!("lib_reloader is None");
+            log::debug!("lib_reloader is None");
             return;
         };
 
         let Ok(reloader) = lib_reloader.lock() else {
-            #[cfg(feature = "verbose")]
-            log::error!("Failed to acquire lock on lib_reloader");
+            log::debug!("Failed to acquire lock on lib_reloader");
             return;
         };
 
-        #[cfg(feature = "verbose")]
-        log::info!("Attempting to get font loading function symbol");
+        log::debug!("Attempting to get font loading function symbol");
 
         // Get the font loading function from the library
         let Ok(load_font_fn) = (unsafe {
@@ -1452,25 +1474,22 @@ where
                 hot_ice_common::LOAD_FONT_FUNCTION_NAME.as_bytes(),
             )
         }) else {
-            #[cfg(feature = "verbose")]
-            log::warn!(
+            log::debug!(
                 "Font loading function not found in library. Function name: {}",
                 hot_ice_common::LOAD_FONT_FUNCTION_NAME
             );
             return;
         };
 
-        #[cfg(feature = "verbose")]
-        log::info!(
+        log::debug!(
             "Font loading function found, loading {} fonts",
             self.loaded_fonts.len()
         );
 
         // Load each tracked font into the library
-        for (_i, font_cow) in self.loaded_fonts.iter().enumerate() {
+        for (i, font_cow) in self.loaded_fonts.iter().enumerate() {
             let font_bytes: &[u8] = font_cow.as_ref();
-            #[cfg(feature = "verbose")]
-            log::info!("Loading font {} with {} bytes", _i, font_bytes.len());
+            log::debug!("Loading font {} with {} bytes", i, font_bytes.len());
             load_font_fn(font_bytes.as_ptr(), font_bytes.len());
         }
 

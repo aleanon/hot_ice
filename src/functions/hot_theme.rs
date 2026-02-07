@@ -74,45 +74,20 @@ where
     pub fn theme(
         &self,
         state: &State,
-        fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
-    ) -> Option<Theme> {
+    ) -> Result<(Option<Theme>, FunctionState), HotIceError> {
         let Some(reloader) = reloader else {
-            *fn_state = FunctionState::Static;
-            return match self.function.static_theme(state) {
-                Ok(theme) => theme,
-                Err(err) => {
-                    *fn_state = FunctionState::Error(err.to_string());
-                    None
-                }
-            };
+            let theme = self.function.static_theme(state)?;
+            return Ok((theme, FunctionState::Static));
         };
 
         match self.function.hot_theme(state, reloader, self.function_name) {
-            Ok(theme) => {
-                *fn_state = FunctionState::Hot;
-                theme
+            Ok(theme) => Ok((theme, FunctionState::Hot)),
+            Err(HotIceError::FunctionNotFound(_)) => {
+                let theme = self.function.static_theme(state)?;
+                Ok((theme, FunctionState::Static))
             }
-            Err(err) => {
-                match err {
-                    HotIceError::FunctionNotFound(_) => {
-                        return match self.function.static_theme(state) {
-                            Ok(theme) => {
-                                *fn_state = FunctionState::Static;
-                                theme
-                            }
-                            Err(err) => {
-                                *fn_state = FunctionState::Error(err.to_string());
-                                None
-                            }
-                        };
-                    }
-                    _ => {}
-                }
-                log::error!("{}\nFallback to default theme", err);
-                *fn_state = FunctionState::Error(err.to_string());
-                None
-            }
+            Err(err) => Err(err),
         }
     }
 }
