@@ -15,6 +15,7 @@ use hot_ice_common::{
     DESERIALIZE_STATE_FUNCTION_NAME, FREE_SERIALIZED_DATA_FUNCTION_NAME,
     SERIALIZE_STATE_FUNCTION_NAME,
 };
+use iced::Border;
 use iced_core::{
     Alignment, Animation, Background, Color, Element, Length, Padding, Settings, Theme,
     animation::Easing,
@@ -311,7 +312,6 @@ pub enum FunctionState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HotFunction {
-    View,
     Update,
     Subscription,
     Theme,
@@ -772,19 +772,38 @@ where
         let program_view = match &self.reloader_state {
             ReloaderState::Ready => {
                 match program.view(&self.state, window, self.lib_reloader.as_ref()) {
-                    Ok((element, fn_state)) => {
-                        let view_fn_state = fn_state;
-                        self.sync_error_state(HotFunction::View, &view_fn_state);
-                        element.map(Message::AppMessage)
-                    }
+                    Ok((element, _fn_state)) => element.map(Message::AppMessage),
                     Err(err) => {
                         log::error!("view(): {}", err);
-                        let view_fn_state = FunctionState::Error(err.to_string());
-                        self.sync_error_state(HotFunction::View, &view_fn_state);
                         with_default_theme(
-                            container(iced::widget::Text::new(err.to_string()))
-                                .center(Length::Fill)
-                                .into(),
+                            container(
+                                container(
+                                    column![
+                                        iced_widget::Text::new("View Error")
+                                            .center()
+                                            .style(iced_widget::text::danger),
+                                        iced_widget::Text::new(err.to_string())
+                                    ]
+                                    .width(Length::Fill)
+                                    .spacing(30)
+                                    .align_x(Alignment::Center),
+                                )
+                                .style(|theme| {
+                                    let palette = theme.extended_palette();
+                                    let mut style = iced_widget::container::dark(theme);
+                                    style.border = Border {
+                                        color: palette.warning.weak.color,
+                                        radius: 15.0.into(),
+                                        width: 2.0,
+                                    };
+                                    style
+                                })
+                                .center(Length::Shrink)
+                                .padding(20),
+                            )
+                            .center(Length::Fill)
+                            .padding(100)
+                            .into(),
                         )
                     }
                 }
@@ -848,12 +867,16 @@ where
                         })
                         .size(13),
                     space().width(Length::Fill),
-                    button(Text::new(toggle_label).size(12))
-                        .on_press(Message::ToggleErrorExpand(func))
-                        .style(button::text),
-                    button(Text::new("X").size(12))
-                        .on_press(Message::DismissError(func))
-                        .style(button::text),
+                    button(Text::new(toggle_label).size(12).style(move |_| TextStyle {
+                        color: Some(Color::from_rgba(1.0, 1.0, 1.0, text_alpha)),
+                    }),)
+                    .on_press(Message::ToggleErrorExpand(func))
+                    .style(button::text),
+                    button(Text::new("X").size(12).style(move |_| TextStyle {
+                        color: Some(Color::from_rgba(1.0, 1.0, 1.0, text_alpha)),
+                    }),)
+                    .on_press(Message::DismissError(func))
+                    .style(button::text),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center);
