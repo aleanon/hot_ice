@@ -453,7 +453,7 @@ impl Drop for DrainHandle {
 #[macro_export]
 macro_rules! export_executor {
     () => {
-        $crate::export_executor!($crate::iced_futures::backend::default::Executor);
+        $crate::export_executor!($crate::macro_use::iced_futures::backend::default::Executor);
     };
     ($executor_ty:ty) => {
         /// Starts a worker thread inside this cdylib.
@@ -466,7 +466,8 @@ macro_rules! export_executor {
             data: *mut (),
             run_fn: unsafe extern "C" fn(*mut ()),
         ) -> *mut () {
-            let executor = match <$executor_ty as $crate::iced_futures::Executor>::new() {
+            let executor = match <$executor_ty as $crate::macro_use::iced_futures::Executor>::new()
+            {
                 Ok(e) => e,
                 Err(err) => {
                     ::std::eprintln!("hot_ice: failed to create executor in cdylib: {}", err);
@@ -510,7 +511,7 @@ macro_rules! export_executor {
                     // Enter the executor's TLS context on this dedicated thread.
                     // All tokio::spawn() calls inside the callback will find the
                     // runtime handle in this thread's TLS.
-                    <$executor_ty as $crate::iced_futures::Executor>::enter(
+                    <$executor_ty as $crate::macro_use::iced_futures::Executor>::enter(
                         &exec_for_thread,
                         move || {
                             // Call back into the main binary's worker loop

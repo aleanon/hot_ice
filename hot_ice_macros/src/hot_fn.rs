@@ -484,7 +484,7 @@ fn view(
             let font_bytes = unsafe { ::core::slice::from_raw_parts(font_ptr, font_len) };
 
             // Get the font system and load the font
-            let font_system = hot_ice::iced_graphics::text::font_system();
+            let font_system = hot_ice::macro_use::font_system();
             if let ::core::result::Result::Ok(mut system) = font_system.write() {
                 system.load_font(::std::borrow::Cow::Borrowed(font_bytes));
             }

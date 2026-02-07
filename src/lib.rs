@@ -18,8 +18,6 @@ mod winit;
 
 //Re-export
 pub use iced;
-pub use iced_futures;
-pub use iced_graphics;
 pub use serde;
 pub use serde_derive;
 
@@ -32,4 +30,6 @@ pub mod macro_use {
     pub use super::hot_state::{DynState, HotState};
     pub use super::message::{DynMessage, HotMessage};
     pub use super::panic_hook::catch_panic;
+    pub use iced_futures;
+    pub use iced_graphics::text::font_system;
 }
