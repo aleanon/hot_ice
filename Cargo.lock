@@ -1754,13 +1754,11 @@ dependencies = [
  "mundy",
  "notify",
  "notify-debouncer-full",
- "once_cell",
  "rustc-hash 2.1.1",
  "serde",
  "serde_derive",
  "serde_json",
  "thiserror 2.0.17",
- "window_clipboard",
  "winit",
 ]
 

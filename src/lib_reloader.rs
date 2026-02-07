@@ -266,15 +266,6 @@ impl LibReloader {
                 .watch(&lib_file, RecursiveMode::NonRecursive)
                 .expect("watch lib file");
 
-            // debouncer
-            //     .cache()
-            //     .add_root(dir.path(), RecursiveMode::Recursive);
-
-            // let mut watcher = RecommendedWatcher::new(tx, Config::default()).unwrap();
-            // watcher
-            //     .watch(&lib_file, RecursiveMode::NonRecursive)
-            //     .expect("watch lib file");
-
             let signal_change = || {
                 let current_hash = hash_file(&lib_file);
                 let stored_hash = lib_file_hash.load(Ordering::Acquire);
