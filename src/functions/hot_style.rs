@@ -61,7 +61,6 @@ pub struct HotStyle<F, State, Theme> {
 impl<F, State, Theme> HotStyle<F, State, Theme>
 where
     F: IntoHotStyle<State, Theme>,
-    Theme: theme::Base,
 {
     pub fn new(function: F) -> Self {
         let type_name = type_name::<F>();
@@ -80,48 +79,23 @@ where
         &self,
         state: &State,
         theme: &Theme,
-        fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
-    ) -> theme::Style {
+    ) -> Result<(theme::Style, FunctionState), HotIceError> {
         let Some(reloader) = reloader else {
-            *fn_state = FunctionState::Static;
-            return match self.function.static_style(state, theme) {
-                Ok(style) => style,
-                Err(err) => {
-                    *fn_state = FunctionState::Error(err.to_string());
-                    theme::Base::base(theme)
-                }
-            };
+            let style = self.function.static_style(state, theme)?;
+            return Ok((style, FunctionState::Static));
         };
 
         match self
             .function
             .hot_style(state, theme, reloader, self.function_name)
         {
-            Ok(style) => {
-                *fn_state = FunctionState::Hot;
-                style
+            Ok(style) => Ok((style, FunctionState::Hot)),
+            Err(HotIceError::FunctionNotFound(_)) => {
+                let style = self.function.static_style(state, theme)?;
+                Ok((style, FunctionState::Static))
             }
-            Err(err) => {
-                match err {
-                    HotIceError::FunctionNotFound(_) => {
-                        return match self.function.static_style(state, theme) {
-                            Ok(style) => {
-                                *fn_state = FunctionState::Static;
-                                style
-                            }
-                            Err(err) => {
-                                *fn_state = FunctionState::Error(err.to_string());
-                                theme::Base::base(theme)
-                            }
-                        };
-                    }
-                    _ => {}
-                }
-                log::error!("{}\nFallback to base style", err);
-                *fn_state = FunctionState::Error(err.to_string());
-                theme::Base::base(theme)
-            }
+            Err(err) => Err(err),
         }
     }
 }

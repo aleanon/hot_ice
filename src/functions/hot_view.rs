@@ -4,9 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use iced::Length;
 use iced_core::Element;
-use iced_widget::container;
 
 use crate::{
     error::HotIceError, into_result::IntoResult, lib_reloader::LibReloader, message::MessageSource,
@@ -96,53 +94,26 @@ where
     pub fn view(
         &self,
         state: &'a State,
-        fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
-    ) -> Element<'a, MessageSource<Message>, Theme, Renderer> {
+    ) -> Result<
+        (
+            Element<'a, MessageSource<Message>, Theme, Renderer>,
+            FunctionState,
+        ),
+        HotIceError,
+    > {
         let Some(reloader) = reloader else {
-            return match self.function.static_view(state) {
-                Ok(element) => {
-                    *fn_state = FunctionState::Static;
-                    element.map(MessageSource::Static)
-                }
-                Err(err) => {
-                    *fn_state = FunctionState::Error(err.to_string());
-                    container(iced::widget::Text::new(err.to_string()))
-                        .center(Length::Fill)
-                        .into()
-                }
-            };
+            let element = self.function.static_view(state)?;
+            return Ok((element.map(MessageSource::Static), FunctionState::Static));
         };
 
         match self.function.hot_view(state, reloader, self.function_name) {
-            Ok(element) => {
-                *fn_state = FunctionState::Hot;
-                element.map(MessageSource::Dynamic)
+            Ok(element) => Ok((element.map(MessageSource::Dynamic), FunctionState::Hot)),
+            Err(HotIceError::FunctionNotFound(_)) => {
+                let element = self.function.static_view(state)?;
+                Ok((element.map(MessageSource::Static), FunctionState::Static))
             }
-            Err(err) => {
-                match err {
-                    HotIceError::FunctionNotFound(_) => {
-                        return match self.function.static_view(state) {
-                            Ok(element) => {
-                                *fn_state = FunctionState::Static;
-                                element.map(MessageSource::Static)
-                            }
-                            Err(err) => {
-                                *fn_state = FunctionState::Error(err.to_string());
-                                container(iced::widget::Text::new(err.to_string()))
-                                    .center(Length::Fill)
-                                    .into()
-                            }
-                        };
-                    }
-                    _ => {}
-                }
-                log::error!("view(): {}", err);
-                *fn_state = FunctionState::Error(err.to_string());
-                container(iced::widget::Text::new(err.to_string()))
-                    .center(Length::Fill)
-                    .into()
-            }
+            Err(err) => Err(err),
         }
     }
 }

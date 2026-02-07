@@ -13,6 +13,7 @@ use iced_futures::Executor;
 use iced_winit::{Error, runtime::Task};
 
 use crate::{
+    error::HotIceError,
     functions::{
         boot,
         hot_scale_factor::IntoHotScaleFactor,
@@ -259,24 +260,28 @@ where
             &self,
             state: &mut Self::State,
             message: MessageSource<Self::Message>,
-            fn_state: &mut FunctionState,
             reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Task<MessageSource<Self::Message>> {
-            self.update.update(state, message, fn_state, reloader)
+        ) -> Result<(Task<MessageSource<Self::Message>>, FunctionState), HotIceError> {
+            self.update.update(state, message, reloader)
         }
 
         fn view<'a>(
             &self,
             state: &'a Self::State,
             _window: window::Id,
-            fn_state: &mut FunctionState,
             reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>
+        ) -> Result<
+            (
+                Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>,
+                FunctionState,
+            ),
+            HotIceError,
+        >
         where
             Theme: 'a,
             Renderer: 'a,
         {
-            self.view.view(state, fn_state, reloader)
+            self.view.view(state, reloader)
         }
 
         fn settings(&self) -> Settings {

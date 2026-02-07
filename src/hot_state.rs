@@ -50,7 +50,7 @@ impl HotState {
 
     pub fn serialize_state<T>(&self) -> Result<Vec<u8>, HotIceError>
     where
-        T: DynState + Serialize + 'static,
+        T: DynState,
     {
         let serialized = self
             .state
@@ -62,7 +62,7 @@ impl HotState {
 
     pub fn deserialize_state<T>(&mut self, data: &[u8]) -> Result<(), HotIceError>
     where
-        T: DynState + DeserializeOwned + 'static + Default,
+        T: DynState + DeserializeOwned + Default,
     {
         let mut result = Ok(());
         let new_state: T = if data.is_empty() {
@@ -82,7 +82,7 @@ impl HotState {
 
         let old_state = std::mem::replace(&mut self.state, Box::new(new_state));
 
-        // we leak this here because we have the pointers to this memory in the reloader,
+        // we leak this here because we have the pointer to this memory in the reloader,
         // it's manually freed later
         std::mem::forget(old_state);
 

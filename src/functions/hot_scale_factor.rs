@@ -77,46 +77,23 @@ where
         &self,
         state: &State,
         window: window::Id,
-        fn_state: &mut FunctionState,
         reloader: Option<&Arc<Mutex<LibReloader>>>,
-    ) -> f32 {
+    ) -> Result<(f32, FunctionState), HotIceError> {
         let Some(reloader) = reloader else {
-            *fn_state = FunctionState::Static;
-            return match self.function.static_scale_factor(state, window) {
-                Ok(scale_factor) => scale_factor,
-                Err(err) => {
-                    *fn_state = FunctionState::Error(err.to_string());
-                    1.0
-                }
-            };
+            let scale_factor = self.function.static_scale_factor(state, window)?;
+            return Ok((scale_factor, FunctionState::Static));
         };
 
         match self
             .function
             .hot_scale_factor(state, window, reloader, self.function_name)
         {
-            Ok(scale_factor) => {
-                *fn_state = FunctionState::Hot;
-                scale_factor
+            Ok(scale_factor) => Ok((scale_factor, FunctionState::Hot)),
+            Err(HotIceError::FunctionNotFound(_)) => {
+                let scale_factor = self.function.static_scale_factor(state, window)?;
+                Ok((scale_factor, FunctionState::Static))
             }
-            Err(err) => {
-                match err {
-                    HotIceError::FunctionNotFound(_) => {
-                        *fn_state = FunctionState::Static;
-                        return match self.function.static_scale_factor(state, window) {
-                            Ok(scale_factor) => scale_factor,
-                            Err(err) => {
-                                *fn_state = FunctionState::Error(err.to_string());
-                                1.0
-                            }
-                        };
-                    }
-                    _ => {}
-                }
-                log::error!("{}\nFallback to scale factor 1.0", err);
-                *fn_state = FunctionState::FallBackStatic(err.to_string());
-                1.0
-            }
+            Err(err) => Err(err),
         }
     }
 }
