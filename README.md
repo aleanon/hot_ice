@@ -23,7 +23,7 @@ Edit your GUI code and see changes instantly without restarting your application
 Hot Ice requires a workspace with separate crates for your
 binary and hot-reloadable UI:
 
-```json
+```js
 my_app/
 ├── Cargo.toml              # Workspace manifest
 ├── my_app/                 # Binary crate

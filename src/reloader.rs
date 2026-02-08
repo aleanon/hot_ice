@@ -41,8 +41,8 @@ use log::info;
 use thiserror::Error;
 
 use crate::{
-    erased_executor::{CdylibWorker, DrainHandle},
     error::HotIceError,
+    executor::{CdylibWorker, DrainHandle},
     hot_program::HotProgram,
     lib_reloader::{LibReloader, RetiredLibrary},
     message::MessageSource,
@@ -1535,7 +1535,7 @@ where
             return;
         };
 
-        let Some(proxy) = crate::erased_executor::get_global_proxy::<Message<P>>() else {
+        let Some(proxy) = crate::executor::get_global_proxy::<Message<P>>() else {
             log::error!("Cannot start worker: global proxy not set");
             return;
         };

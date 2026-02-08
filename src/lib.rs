@@ -3,8 +3,8 @@
 
 #[cfg(target_os = "macos")]
 mod codesign;
-pub mod erased_executor;
 mod error;
+pub mod executor;
 mod functions;
 mod hot_application;
 mod hot_program;

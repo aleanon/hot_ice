@@ -82,7 +82,7 @@ where
 
     // Store a clone of the proxy globally so the Reloader can give it to
     // cdylib worker threads for sending actions back to the event loop.
-    crate::erased_executor::set_global_proxy(proxy.clone());
+    crate::executor::set_global_proxy(proxy.clone());
 
     #[cfg(feature = "debug")]
     {
