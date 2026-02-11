@@ -396,7 +396,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     reloader_state: ReloaderState,
     lib_reloader: Option<Arc<Mutex<LibReloader>>>,
     worker: Option<Arc<CdylibWorker<Message<P>>>>,
-    pending_drain: Option<DrainHandle>,
+    pending_drain: Option<DrainHandle<Message<P>>>,
     reloader_settings: ReloaderSettings,
     lib_name: &'static str,
     reloading_sensor_key: u16,
@@ -1001,9 +1001,8 @@ where
             match program.title(&self.state, window, self.lib_reloader.as_ref()) {
                 Ok((title, fn_state)) => {
                     if let Ok(mut state) = self.title_fn_state.lock() {
-                        *state = fn_state.clone();
+                        *state = fn_state;
                     }
-                    self.sync_error_state(HotFunction::Title, &fn_state);
                     format!("Reloading: {}", title)
                 }
                 Err(err) => {
@@ -1027,9 +1026,8 @@ where
             match program.theme(&self.state, window, self.lib_reloader.as_ref()) {
                 Ok((theme, fn_state)) => {
                     if let Ok(mut state) = self.theme_fn_state.lock() {
-                        *state = fn_state.clone();
+                        *state = fn_state;
                     }
-                    self.sync_error_state(HotFunction::Theme, &fn_state);
                     theme
                 }
                 Err(err) => {
@@ -1053,9 +1051,8 @@ where
             match program.style(&self.state, theme, self.lib_reloader.as_ref()) {
                 Ok((style, fn_state)) => {
                     if let Ok(mut state) = self.style_fn_state.lock() {
-                        *state = fn_state.clone();
+                        *state = fn_state;
                     }
-                    self.sync_error_state(HotFunction::Style, &fn_state);
                     style
                 }
                 Err(err) => {
@@ -1079,9 +1076,8 @@ where
             match program.scale_factor(&self.state, window, self.lib_reloader.as_ref()) {
                 Ok((factor, fn_state)) => {
                     if let Ok(mut state) = self.scale_factor_fn_state.lock() {
-                        *state = fn_state.clone();
+                        *state = fn_state;
                     }
-                    self.sync_error_state(HotFunction::ScaleFactor, &fn_state);
                     factor
                 }
                 Err(err) => {

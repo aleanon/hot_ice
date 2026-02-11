@@ -8,28 +8,29 @@
 //!
 //! ```text
 //! Main Binary                          cdylib (hot-reloaded)
-//! +-----------------------+            +-----------------------+
-//! | Reloader              |            | Worker Thread         |
-//! |  update() called      |            |   executor.enter(||{  |
-//! |  -> task = app.update |            |     block_on(async {  |
-//! |  -> sync-drain Ready  |            |       poll streams    |
-//! |  -> send Pending -----+----------->|       via channel     |
-//! |     stream to worker  |            |     })                |
-//! |                       |            |   })                  |
-//! |  Actions arrive back  |            |                       |
-//! |  via Proxy (event loop|<-----------+-- proxy.send_action() |
-//! |  UserEvent)           |            |                       |
-//! +-----------------------+            +-----------------------+
+//! +-----------------------+            +-------------------------------+
+//! | CdylibWorker<M>       |            | export_executor! macro code   |
+//! |  erases Action<M>     |            |   spawns thread               |
+//! |  → *mut () items      |            |   executor.enter(||{          |
+//! |  sends erased cmds ───+──────────→ |     erased_worker_loop(ctx)   |
+//! |                       |            |       polls erased streams    |
+//! |  action_callback<M>() |            |       catch_unwind per stream |
+//! |  ← *mut () action ───←+←────────← |       calls action_callback   |
+//! |  unbox → Action<M>    |            |       calls panic_callback    |
+//! |  proxy.send_action()  |            |   })                         |
+//! +-----------------------+            +-------------------------------+
 //! ```
 //!
 //! # How it works
 //!
 //! 1. On library load, the cdylib creates an executor and spawns a worker thread
 //! 2. The worker thread enters the executor's TLS context via `Executor::enter()`
-//! 3. A callback into the main binary runs a polling loop using `FuturesUnordered`
-//! 4. The main binary sends `BoxStream<Action<Message>>` to the worker via channel
-//! 5. The worker polls streams and sends resulting actions back via `Proxy::send_action()`
-//! 6. On library unload, a shutdown command stops the worker and the thread is joined
+//! 3. The cdylib runs the type-erased polling loop (`erased_worker_loop`)
+//! 4. The main binary sends type-erased streams to the worker via a channel
+//! 5. The worker polls streams; each action item is forwarded via a callback
+//!    that reconstructs `Action<M>` and calls `Proxy::send_action()`
+//! 6. Panics in user async code are caught by `catch_unwind` inside the cdylib
+//! 7. On library unload, a shutdown command stops the worker and the thread is joined
 
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
@@ -37,28 +38,33 @@ use std::sync::{Arc, OnceLock};
 use crate::lib_reloader::LibReloader;
 use crate::winit::Proxy;
 
+/// Wrapper around `*mut ()` that implements `Send + Sync`.
+///
+/// Used to pass raw callback pointers into async contexts.
+/// Safety: the pointed-to data must actually be safe to access from the
+/// worker thread (which it is — `CallbackContext<M>` is only accessed
+/// sequentially from the single worker thread).
+#[derive(Clone, Copy)]
+struct SendPtr(*mut ());
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
+
+impl SendPtr {
+    fn as_ptr(self) -> *mut () {
+        self.0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Global proxy storage — set by winit/mod.rs::run(), read by Reloader::new()
 // ---------------------------------------------------------------------------
 
-/// Type-erased global proxy for the event loop.
-///
-/// Set once during `winit::run()` initialization, before `Program::boot()`.
-/// Retrieved by `Reloader::new()` to give workers a way to send actions
-/// back to the event loop.
 static GLOBAL_PROXY: OnceLock<Arc<dyn Any + Send + Sync>> = OnceLock::new();
 
-/// Stores a clone of the event loop proxy for later retrieval.
-///
-/// Called once during `winit::run()` before the program is booted.
 pub fn set_global_proxy<M: Send + 'static>(proxy: Proxy<M>) {
     let _ = GLOBAL_PROXY.set(Arc::new(proxy));
 }
 
-/// Retrieves a clone of the stored event loop proxy.
-///
-/// Returns `None` if `set_global_proxy` hasn't been called yet or if
-/// the type parameter doesn't match.
 pub fn get_global_proxy<M: Send + 'static>() -> Option<Proxy<M>> {
     GLOBAL_PROXY.get()?.downcast_ref::<Proxy<M>>().cloned()
 }
@@ -67,143 +73,195 @@ pub fn get_global_proxy<M: Send + 'static>() -> Option<Proxy<M>> {
 // FFI function pointer types
 // ---------------------------------------------------------------------------
 
-/// Function pointer types for the worker FFI interface.
-///
-/// These are the signatures of functions exported from the cdylib via
-/// the `export_executor!` macro.
 pub mod ffi {
     /// Starts a worker thread inside the cdylib.
     ///
-    /// The cdylib creates an executor, spawns a thread that enters the
-    /// executor's TLS context, and calls `run_fn(data)` on that thread.
+    /// `ctx` is a `*mut ErasedWorkerContext` created by the main binary.
+    /// The cdylib takes ownership, spawns a thread with executor TLS,
+    /// and runs the polling loop.
     ///
-    /// - `data`: opaque pointer to a `WorkerContext` created by the main binary
-    /// - `run_fn`: callback function defined in the main binary (the polling loop)
-    ///
-    /// Returns an opaque handle for stopping the worker, or null on failure.
-    pub type StartWorkerFn =
-        unsafe extern "C" fn(data: *mut (), run_fn: unsafe extern "C" fn(*mut ())) -> *mut ();
+    /// Returns an opaque handle for `stop_worker`, or null on failure.
+    pub type StartWorkerFn = unsafe fn(ctx: *mut ()) -> *mut ();
 
     /// Stops the worker thread and joins it.
-    ///
-    /// The handle was returned by `StartWorkerFn`. The main binary should
-    /// have already sent a shutdown command via the channel so the worker
-    /// loop exits before this is called.
-    pub type StopWorkerFn = unsafe extern "C" fn(handle: *mut ());
+    pub type StopWorkerFn = unsafe fn(handle: *mut ());
 }
 
 // ---------------------------------------------------------------------------
-// Worker channel protocol
-// ---------------------------------------------------------------------------
-
-use futures::stream::BoxStream;
-use iced_runtime::Action;
-
-/// Command sent from the main thread to the cdylib worker thread.
-pub enum WorkerCommand<M> {
-    /// Poll this stream to completion, forwarding actions via the proxy.
-    RunStream(BoxStream<'static, Action<M>>),
-    /// Shut down the worker thread immediately, dropping in-flight streams.
-    Shutdown,
-    /// Stop accepting new streams and drain active ones to completion,
-    /// with a timeout to prevent indefinite blocking.
-    Drain { timeout: std::time::Duration },
-}
-
-// ---------------------------------------------------------------------------
-// Worker context and trampoline
+// Type-erased worker protocol
 // ---------------------------------------------------------------------------
 
 use futures::channel::mpsc as fmpsc;
+use futures::stream::BoxStream;
+use iced_runtime::Action;
 
-/// Context for the worker polling loop. Allocated on the main binary's heap
-/// and passed to the cdylib as an opaque `*mut ()`.
-///
-/// The generic `M` (message type) is known to the main binary but invisible
-/// to the cdylib — all the cdylib does is call `run_fn(data)`.
-struct WorkerContext<M: Send + 'static> {
-    /// Receives stream commands from the main thread.
-    command_rx: fmpsc::UnboundedReceiver<WorkerCommand<M>>,
-    /// Proxy to send actions back to the event loop.
-    proxy: Proxy<M>,
+/// Type-erased stream: each item is `Box::into_raw(Box::new(Action<M>))`.
+pub type ErasedStream = BoxStream<'static, *mut ()>;
+
+/// Called by the cdylib for each action pointer produced by a stream.
+/// The main binary reconstructs `Action<M>` and calls `proxy.send_action()`.
+pub type ActionCallbackFn = unsafe fn(ctx: *mut (), action_ptr: *mut ());
+
+/// Called by the cdylib when a stream panics.
+/// The main binary receives the panic message as a UTF-8 byte slice.
+pub type PanicCallbackFn = unsafe fn(ctx: *mut (), msg_ptr: *const u8, msg_len: usize);
+
+/// Non-generic command sent over the channel from main binary to worker.
+pub enum ErasedWorkerCommand {
+    /// Poll this type-erased stream to completion.
+    RunStream(ErasedStream),
+    /// Shut down the worker thread immediately.
+    Shutdown,
+    /// Drain active streams with a timeout, then exit.
+    Drain { timeout: std::time::Duration },
 }
 
-/// The polling loop that runs on the cdylib's worker thread.
+/// Non-generic context passed from the main binary to the cdylib.
 ///
-/// This is an `unsafe extern "C" fn` so it can be passed as a function pointer
-/// across FFI. It is monomorphized in the main binary (knows `M`), but
-/// executed on the cdylib's thread inside `executor.enter()`.
-///
-/// Uses `futures::executor::block_on` (NOT tokio's) to drive a
-/// `FuturesUnordered` that concurrently polls all active streams.
-/// `block_on` does not set up any TLS — the cdylib's `executor.enter()`
-/// already handles that. So `tokio::spawn()` calls inside the streams
-/// find the runtime handle in TLS and work correctly.
-///
-/// # Safety
-///
-/// `data` must point to a valid `Box<WorkerContext<M>>` that was created
-/// by `CdylibWorker::start()`.
-unsafe extern "C" fn worker_trampoline<M: Send + 'static>(data: *mut ()) {
-    // Take ownership of the context
-    let ctx = unsafe { Box::from_raw(data as *mut WorkerContext<M>) };
-
-    futures::executor::block_on(worker_loop(ctx.command_rx, ctx.proxy));
+/// The cdylib's `start_worker` function receives this as `*mut ()`,
+/// reconstructs it, and passes it to `erased_worker_loop`.
+pub struct ErasedWorkerContext {
+    pub command_rx: fmpsc::UnboundedReceiver<ErasedWorkerCommand>,
+    pub callback_ctx: *mut (),
+    pub action_callback: ActionCallbackFn,
+    pub panic_callback: PanicCallbackFn,
 }
 
-/// The async polling loop driven by `block_on`.
+// Safety: command_rx is Send, callback_ctx points to a Send type
+// (CallbackContext<M>), function pointers are inherently thread-safe.
+unsafe impl Send for ErasedWorkerContext {}
+
+// ---------------------------------------------------------------------------
+// Erased polling loop — compiled into the cdylib via hot_ice dependency
+// ---------------------------------------------------------------------------
+
+/// Entry point for the type-erased polling loop.
 ///
-/// Concurrently polls all active streams using `FuturesUnordered` while
-/// accepting new stream commands from the channel.
-async fn worker_loop<M: Send + 'static>(
-    mut command_rx: fmpsc::UnboundedReceiver<WorkerCommand<M>>,
-    proxy: Proxy<M>,
+/// This function is non-generic and compiles into the cdylib (via the
+/// `hot_ice` dependency). Panics from user async code are caught here,
+/// in the same compilation unit as the user's code.
+pub fn erased_worker_loop(ctx: ErasedWorkerContext) {
+    crate::panic_hook::ensure_panic_hook_installed();
+
+    let ErasedWorkerContext {
+        command_rx,
+        callback_ctx,
+        action_callback,
+        panic_callback,
+    } = ctx;
+
+    futures::executor::block_on(erased_worker_loop_async(
+        command_rx,
+        callback_ctx,
+        action_callback,
+        panic_callback,
+    ));
+}
+
+async fn erased_worker_loop_async(
+    mut command_rx: fmpsc::UnboundedReceiver<ErasedWorkerCommand>,
+    callback_ctx: *mut (),
+    action_callback: ActionCallbackFn,
+    panic_callback: PanicCallbackFn,
 ) {
+    use futures::FutureExt;
     use futures::stream::{FuturesUnordered, StreamExt};
+    use std::panic::AssertUnwindSafe;
+
+    let ctx = SendPtr(callback_ctx);
 
     let mut active: FuturesUnordered<futures::future::BoxFuture<'static, ()>> =
         FuturesUnordered::new();
 
-    // Seed with a pending future so FuturesUnordered never returns None
-    // (which would mean "empty" and terminate the select loop).
-    // We use a future that never completes.
+    // Sentinel future that never completes — prevents FuturesUnordered
+    // from returning None when empty.
     active.push(Box::pin(futures::future::pending()));
 
     loop {
-        futures::select! {
-            // Poll all active stream-draining futures
-            _ = active.select_next_some() => {
-                // A stream finished draining — nothing to do, it's removed
-                // from FuturesUnordered automatically.
-            }
-            // Check for new commands
-            cmd = command_rx.select_next_some() => {
-                match cmd {
-                    WorkerCommand::RunStream(stream) => {
-                        let proxy = proxy.clone();
-                        active.push(Box::pin(drain_stream(stream, proxy)));
+        let result = AssertUnwindSafe(async {
+            loop {
+                futures::select! {
+                    _ = active.select_next_some() => {
+                        // A stream finished draining — removed automatically.
                     }
-                    WorkerCommand::Shutdown => {
-                        break;
+                    cmd = command_rx.select_next_some() => {
+                        match cmd {
+                            ErasedWorkerCommand::RunStream(stream) => {
+                                let cb_ctx = ctx;
+                                let action_cb = action_callback;
+                                let panic_cb = panic_callback;
+
+                                active.push(Box::pin(
+                                    AssertUnwindSafe(
+                                        erased_drain_stream(stream, cb_ctx, action_cb),
+                                    )
+                                    .catch_unwind()
+                                    .map(move |result| {
+                                        handle_stream_result(result, cb_ctx, panic_cb);
+                                    }),
+                                ));
+                            }
+                            ErasedWorkerCommand::Shutdown => {
+                                break;
+                            }
+                            ErasedWorkerCommand::Drain { timeout } => {
+                                erased_drain_active(&mut active, timeout).await;
+                                return;
+                            }
+                        }
                     }
-                    WorkerCommand::Drain { timeout } => {
-                        drain_active(&mut active, timeout).await;
-                        return;
-                    }
+                    complete => break,
                 }
             }
-            // Both channels closed
-            complete => break,
+        })
+        .catch_unwind()
+        .await;
+
+        if let Err(panic) = result {
+            // Outer catch_unwind: keeps the worker alive if the select!
+            // machinery itself panics. Forget the payload to avoid
+            // cross-cdylib drop issues.
+            std::mem::forget(panic);
+        }
+    }
+}
+
+/// Handles the result of a catch_unwind around a drain_stream future.
+/// Extracted into a separate function to avoid capturing `*mut ()` in async context.
+fn handle_stream_result(
+    result: Result<(), Box<dyn Any + Send>>,
+    cb_ctx: SendPtr,
+    panic_cb: PanicCallbackFn,
+) {
+    if let Err(ref panic) = result {
+        let msg = extract_panic_message(panic);
+        let bytes = msg.as_bytes();
+        unsafe {
+            panic_cb(cb_ctx.as_ptr(), bytes.as_ptr(), bytes.len());
+        }
+    }
+    if let Err(panic) = result {
+        std::mem::forget(panic);
+    }
+}
+
+/// Drains a type-erased stream, calling the action callback for each item.
+async fn erased_drain_stream(
+    stream: ErasedStream,
+    callback_ctx: SendPtr,
+    action_callback: ActionCallbackFn,
+) {
+    use futures::StreamExt;
+    futures::pin_mut!(stream);
+    while let Some(action_ptr) = stream.next().await {
+        unsafe {
+            action_callback(callback_ctx.0, action_ptr);
         }
     }
 }
 
 /// Polls all active futures to completion, with a timeout.
-///
-/// The `FuturesUnordered` contains N real tasks + 1 sentinel `pending()`
-/// future. When only the sentinel remains (`len() <= 1`), all real work
-/// is done.
-async fn drain_active(
+async fn erased_drain_active(
     active: &mut futures::stream::FuturesUnordered<futures::future::BoxFuture<'static, ()>>,
     timeout: std::time::Duration,
 ) {
@@ -244,13 +302,61 @@ async fn drain_active(
     }
 }
 
-/// Drains a stream to completion, sending each action to the event loop.
-async fn drain_stream<M: 'static>(stream: BoxStream<'static, Action<M>>, proxy: Proxy<M>) {
-    use futures::StreamExt;
-    futures::pin_mut!(stream);
-    while let Some(action) = stream.next().await {
-        proxy.send_action(action);
+/// Extracts a human-readable message from a panic payload.
+///
+/// Uses the `size_of_val` trick (same as `catch_panic`) to discriminate
+/// between `String` and `&str` payloads without `TypeId`.
+fn extract_panic_message(err: &Box<dyn Any + Send>) -> &str {
+    unsafe {
+        if std::mem::size_of_val(&**err) == std::mem::size_of::<String>() {
+            &*(&**err as *const dyn Any as *const String)
+        } else if std::mem::size_of_val(&**err) == std::mem::size_of::<&str>() {
+            *(&**err as *const dyn Any as *const &str)
+        } else {
+            "unknown panic"
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Main binary side: CallbackContext and callback implementations
+// ---------------------------------------------------------------------------
+
+/// Holds the generic state that callbacks need.
+/// Allocated on the main binary's heap, passed to the cdylib as `*mut ()`.
+struct CallbackContext<M: Send + 'static> {
+    proxy: Proxy<M>,
+}
+
+/// Reconstructs `Action<M>` from the opaque pointer and sends it via proxy.
+///
+/// # Safety
+///
+/// `ctx` must point to a valid `CallbackContext<M>`.
+/// `action_ptr` must point to a valid `Box<Action<M>>` created by stream erasure.
+unsafe fn action_callback_impl<M: Send + 'static>(ctx: *mut (), action_ptr: *mut ()) {
+    let cb_ctx = unsafe { &*(ctx as *const CallbackContext<M>) };
+    let action = unsafe { *Box::from_raw(action_ptr as *mut Action<M>) };
+    cb_ctx.proxy.send_action(action);
+}
+
+/// Receives a panic message from the cdylib and logs it.
+///
+/// # Safety
+///
+/// `msg_ptr` must point to valid UTF-8 bytes of length `msg_len`,
+/// or be null (in which case a default message is used).
+unsafe fn panic_callback_impl<M: Send + 'static>(
+    _ctx: *mut (),
+    msg_ptr: *const u8,
+    msg_len: usize,
+) {
+    let msg = if msg_ptr.is_null() || msg_len == 0 {
+        "unknown panic"
+    } else {
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) }
+    };
+    log::error!("hot-ice worker: stream panicked: {}", msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,17 +368,21 @@ async fn drain_stream<M: 'static>(stream: BoxStream<'static, Action<M>>, proxy: 
 /// Owns the command channel sender and the FFI handle for stopping.
 /// When dropped or shut down, the worker thread is joined.
 pub struct CdylibWorker<M: Send + 'static> {
-    /// Send stream commands to the worker thread.
-    command_tx: fmpsc::UnboundedSender<WorkerCommand<M>>,
+    /// Send erased commands to the worker thread.
+    command_tx: fmpsc::UnboundedSender<ErasedWorkerCommand>,
     /// FFI function to stop the worker (joins thread).
     stop_fn: ffi::StopWorkerFn,
     /// Opaque handle returned by `start_worker`, passed to `stop_worker`.
     worker_handle: *mut (),
+    /// Pointer to the `CallbackContext<M>` on the heap.
+    /// Freed after the worker thread is joined.
+    callback_ctx_ptr: *mut (),
+    /// Marker for the message type.
+    _marker: std::marker::PhantomData<M>,
 }
 
-// Safety: The worker_handle is only used to call stop_fn, which joins the
-// thread. The channel sender is Send. The FFI function pointers are valid
-// for the library's lifetime (managed by LibReloader/RetiredLibrary).
+// Safety: The worker_handle and callback_ctx_ptr are only used through
+// FFI calls and cleanup. The channel sender is Send.
 unsafe impl<M: Send> Send for CdylibWorker<M> {}
 unsafe impl<M: Send> Sync for CdylibWorker<M> {}
 
@@ -280,8 +390,8 @@ impl<M: Send + 'static> CdylibWorker<M> {
     /// Starts a new worker from the loaded library.
     ///
     /// Loads the `start_worker` and `stop_worker` FFI symbols, creates the
-    /// communication channels, and calls into the cdylib to spawn the worker
-    /// thread.
+    /// communication channels with type-erased protocol, and calls into
+    /// the cdylib to spawn the worker thread.
     ///
     /// # Safety
     ///
@@ -301,15 +411,26 @@ impl<M: Send + 'static> CdylibWorker<M> {
 
         let (command_tx, command_rx) = fmpsc::unbounded();
 
-        let ctx = Box::new(WorkerContext { command_rx, proxy });
+        // Allocate callback context on the heap
+        let cb_ctx = Box::new(CallbackContext { proxy });
+        let callback_ctx_ptr = Box::into_raw(cb_ctx) as *mut ();
+
+        // Create the erased worker context
+        let ctx = Box::new(ErasedWorkerContext {
+            command_rx,
+            callback_ctx: callback_ctx_ptr,
+            action_callback: action_callback_impl::<M>,
+            panic_callback: panic_callback_impl::<M>,
+        });
         let ctx_ptr = Box::into_raw(ctx) as *mut ();
 
-        let worker_handle = unsafe { start_fn(ctx_ptr, worker_trampoline::<M>) };
+        let worker_handle = unsafe { start_fn(ctx_ptr) };
 
         if worker_handle.is_null() {
-            // Reclaim context to avoid leak
+            // Reclaim to avoid leaks
             unsafe {
-                let _ = Box::from_raw(ctx_ptr as *mut WorkerContext<M>);
+                let _ = Box::from_raw(ctx_ptr as *mut ErasedWorkerContext);
+                let _ = Box::from_raw(callback_ctx_ptr as *mut CallbackContext<M>);
             }
             return Err("start_worker returned null".into());
         }
@@ -318,34 +439,48 @@ impl<M: Send + 'static> CdylibWorker<M> {
             command_tx,
             stop_fn,
             worker_handle,
+            callback_ctx_ptr,
+            _marker: std::marker::PhantomData,
         })
     }
 
     /// Submits a stream for the worker to poll to completion.
     ///
-    /// Actions produced by the stream are sent back to the event loop
-    /// via `Proxy::send_action()`.
+    /// The stream is type-erased: each `Action<M>` is boxed and converted
+    /// to `*mut ()`. The cdylib's polling loop forwards each pointer back
+    /// via the action callback, which reconstructs and delivers it.
     pub fn run_stream(&self, stream: BoxStream<'static, Action<M>>) {
+        use futures::StreamExt;
+        let erased: ErasedStream =
+            Box::pin(stream.map(|action| Box::into_raw(Box::new(action)) as *mut ()));
         let _ = self
             .command_tx
-            .unbounded_send(WorkerCommand::RunStream(stream));
+            .unbounded_send(ErasedWorkerCommand::RunStream(erased));
     }
 
     /// Shuts down the worker thread.
     ///
     /// Sends a shutdown command, then calls the cdylib's `stop_worker` FFI
-    /// function which joins the thread.
+    /// function which joins the thread. Finally frees the callback context.
     pub fn shutdown(&mut self) {
-        // Send shutdown command (ignore error if already disconnected)
-        let _ = self.command_tx.unbounded_send(WorkerCommand::Shutdown);
-        // Close the channel so the worker sees disconnection
+        let _ = self
+            .command_tx
+            .unbounded_send(ErasedWorkerCommand::Shutdown);
         self.command_tx.close_channel();
-        // Join the worker thread via FFI
+
         if !self.worker_handle.is_null() {
             unsafe {
                 (self.stop_fn)(self.worker_handle);
             }
             self.worker_handle = std::ptr::null_mut();
+        }
+
+        // Free the callback context now that the worker is joined
+        if !self.callback_ctx_ptr.is_null() {
+            unsafe {
+                let _ = Box::from_raw(self.callback_ctx_ptr as *mut CallbackContext<M>);
+            }
+            self.callback_ctx_ptr = std::ptr::null_mut();
         }
     }
 
@@ -356,21 +491,22 @@ impl<M: Send + 'static> CdylibWorker<M> {
     /// and returns a handle. The caller should call `DrainHandle::join()` on
     /// a background thread — it blocks until the worker exits (drain
     /// completes or times out).
-    ///
-    /// After calling this, the `CdylibWorker` is consumed and cannot be used.
-    pub fn begin_drain(mut self, timeout: std::time::Duration) -> DrainHandle {
+    pub fn begin_drain(mut self, timeout: std::time::Duration) -> DrainHandle<M> {
         let _ = self
             .command_tx
-            .unbounded_send(WorkerCommand::Drain { timeout });
+            .unbounded_send(ErasedWorkerCommand::Drain { timeout });
         self.command_tx.close_channel();
 
         let handle = DrainHandle {
             stop_fn: self.stop_fn,
             worker_handle: self.worker_handle,
+            callback_ctx_ptr: self.callback_ctx_ptr,
+            _marker: std::marker::PhantomData::<M>,
         };
 
         // Prevent Drop from calling shutdown
         self.worker_handle = std::ptr::null_mut();
+        self.callback_ctx_ptr = std::ptr::null_mut();
         std::mem::forget(self);
 
         handle
@@ -394,17 +530,17 @@ impl<M: Send + 'static> Drop for CdylibWorker<M> {
 /// Returned by [`CdylibWorker::begin_drain()`]. The caller must eventually
 /// call [`join()`](DrainHandle::join) to block until the worker thread exits.
 /// The `Drop` impl calls `join` as a safety net if the caller forgets.
-pub struct DrainHandle {
+pub struct DrainHandle<M: Send + 'static> {
     stop_fn: ffi::StopWorkerFn,
     worker_handle: *mut (),
+    callback_ctx_ptr: *mut (),
+    _marker: std::marker::PhantomData<M>,
 }
 
-// Safety: same reasoning as CdylibWorker — worker_handle is only used to
-// call stop_fn which joins the thread.
-unsafe impl Send for DrainHandle {}
-unsafe impl Sync for DrainHandle {}
+unsafe impl<M: Send> Send for DrainHandle<M> {}
+unsafe impl<M: Send> Sync for DrainHandle<M> {}
 
-impl DrainHandle {
+impl<M: Send + 'static> DrainHandle<M> {
     /// Blocks until the worker thread exits (drain completes or times out).
     pub fn join(mut self) {
         if !self.worker_handle.is_null() {
@@ -415,10 +551,16 @@ impl DrainHandle {
             self.worker_handle = std::ptr::null_mut();
             log::info!("hot-ice drain: old worker thread joined");
         }
+        if !self.callback_ctx_ptr.is_null() {
+            unsafe {
+                let _ = Box::from_raw(self.callback_ctx_ptr as *mut CallbackContext<M>);
+            }
+            self.callback_ctx_ptr = std::ptr::null_mut();
+        }
     }
 }
 
-impl Drop for DrainHandle {
+impl<M: Send + 'static> Drop for DrainHandle<M> {
     fn drop(&mut self) {
         if !self.worker_handle.is_null() {
             log::warn!("hot-ice drain: DrainHandle dropped without join(), joining now");
@@ -426,6 +568,12 @@ impl Drop for DrainHandle {
                 (self.stop_fn)(self.worker_handle);
             }
             self.worker_handle = std::ptr::null_mut();
+        }
+        if !self.callback_ctx_ptr.is_null() {
+            unsafe {
+                let _ = Box::from_raw(self.callback_ctx_ptr as *mut CallbackContext<M>);
+            }
+            self.callback_ctx_ptr = std::ptr::null_mut();
         }
     }
 }
@@ -458,14 +606,11 @@ macro_rules! export_executor {
     ($executor_ty:ty) => {
         /// Starts a worker thread inside this cdylib.
         ///
-        /// Creates an executor, spawns a thread that enters the executor's
-        /// TLS context, and calls `run_fn(data)` on that thread.
-        /// Returns an opaque handle for `stop_worker` to join.
+        /// Receives an `ErasedWorkerContext` as `*mut ()`, creates an executor,
+        /// spawns a thread that enters the executor's TLS context, and runs
+        /// the type-erased polling loop.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn start_worker_lskdjfa3lkfjasdf(
-            data: *mut (),
-            run_fn: unsafe extern "C" fn(*mut ()),
-        ) -> *mut () {
+        pub unsafe fn start_worker_lskdjfa3lkfjasdf(ctx_ptr: *mut ()) -> *mut () {
             let executor = match <$executor_ty as $crate::macro_use::iced_futures::Executor>::new()
             {
                 Ok(e) => e,
@@ -475,52 +620,26 @@ macro_rules! export_executor {
                 }
             };
 
-            // Move executor into an Arc so both the thread and the handle can reference it.
-            // The thread needs it for enter(); the handle keeps it alive until join.
             let executor = ::std::sync::Arc::new(executor);
             let exec_for_thread = executor.clone();
 
-            // Bundle the FFI callback data into a Send wrapper so it can
-            // cross the thread::spawn boundary.
-            //
-            // Bundle the FFI callback into a Send wrapper that also serves
-            // as a callable. The wrapper stays intact through spawn and enter,
-            // so the compiler never sees bare `*mut ()` in any closure capture.
-            //
-            // Safety: `data` points to a WorkerContext (Send) allocated by the
-            // main binary, and `run_fn` is a plain function pointer (inherently
-            // thread-safe).
-            struct FfiCallback {
-                data: *mut (),
-                run_fn: unsafe extern "C" fn(*mut ()),
-            }
-            unsafe impl Send for FfiCallback {}
-            impl FfiCallback {
-                unsafe fn call(self) {
-                    unsafe {
-                        (self.run_fn)(self.data);
-                    }
-                }
-            }
-
-            let callback = FfiCallback { data, run_fn };
+            // Reconstruct the Box<ErasedWorkerContext> from the raw pointer.
+            // ErasedWorkerContext is Send (unsafe impl), so the Box can
+            // cross the thread::spawn boundary without a wrapper.
+            let ctx_box: ::std::boxed::Box<$crate::executor::ErasedWorkerContext> = unsafe {
+                ::std::boxed::Box::from_raw(ctx_ptr as *mut $crate::executor::ErasedWorkerContext)
+            };
 
             let join_handle = ::std::thread::Builder::new()
                 .name("hot-ice-worker".into())
                 .spawn(move || {
-                    // Enter the executor's TLS context on this dedicated thread.
-                    // All tokio::spawn() calls inside the callback will find the
-                    // runtime handle in this thread's TLS.
+                    let worker_ctx = *ctx_box;
                     <$executor_ty as $crate::macro_use::iced_futures::Executor>::enter(
                         &exec_for_thread,
                         move || {
-                            // Call back into the main binary's worker loop
-                            unsafe {
-                                callback.call();
-                            }
+                            $crate::executor::erased_worker_loop(worker_ctx);
                         },
                     );
-                    // executor Arc ref dropped here
                 })
                 .expect("hot_ice: failed to spawn cdylib worker thread");
 
@@ -529,11 +648,8 @@ macro_rules! export_executor {
         }
 
         /// Stops the worker thread by joining it.
-        ///
-        /// The main binary should have already sent a shutdown command via
-        /// the channel so `run_fn` returns before this is called.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn stop_worker_lskdjfa3lkfjasdf(handle: *mut ()) {
+        pub unsafe fn stop_worker_lskdjfa3lkfjasdf(handle: *mut ()) {
             if handle.is_null() {
                 return;
             }
@@ -550,8 +666,6 @@ macro_rules! export_executor {
             if let Err(err) = join_handle.join() {
                 ::std::eprintln!("hot_ice: worker thread panicked: {:?}", err);
             }
-            // _executor Arc dropped here — if this was the last ref, the
-            // executor (e.g. tokio runtime) is shut down
         }
     };
 }

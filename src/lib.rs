@@ -33,3 +33,7 @@ pub mod macro_use {
     pub use iced_futures;
     pub use iced_graphics::text::font_system;
 }
+
+// Re-export for the export_executor! macro (needs $crate::executor::... paths)
+// The executor module is already pub, so ErasedWorkerContext and
+// erased_worker_loop are accessible via $crate::executor::

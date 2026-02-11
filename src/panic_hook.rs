@@ -12,7 +12,7 @@ struct SyncUnsafeCell(std::cell::UnsafeCell<String>);
 unsafe impl Sync for SyncUnsafeCell {}
 static PANIC_MSG_BUF: SyncUnsafeCell = SyncUnsafeCell(std::cell::UnsafeCell::new(String::new()));
 
-fn ensure_panic_hook_installed() {
+pub(crate) fn ensure_panic_hook_installed() {
     use std::sync::Once;
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
