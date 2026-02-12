@@ -121,6 +121,9 @@ pub struct ReloaderSettings {
     /// Maximum time to wait for in-flight async streams to complete during a
     /// hot reload before dropping them. Default: 5 seconds.
     pub drain_timeout: Duration,
+    /// Optional cargo feature to enable when compiling the cdylib.
+    /// When set, `--features <feature>` is appended to the build command.
+    pub feature: Option<String>,
 }
 
 impl Default for ReloaderSettings {
@@ -132,6 +135,7 @@ impl Default for ReloaderSettings {
             file_watch_debounce: Duration::from_millis(25),
             watch_dir: None,
             drain_timeout: Duration::from_secs(5),
+            feature: None,
         }
     }
 }
@@ -450,6 +454,7 @@ where
             Task::stream(Self::build_library(
                 reloader.lib_name,
                 reloader_settings.target_dir.clone(),
+                reloader_settings.feature.clone(),
             ))
         } else {
             let mut lib_reloader = LibReloader::new(
@@ -553,6 +558,7 @@ where
                     watch_dir,
                     self.lib_name,
                     self.reloader_settings.target_dir.clone(),
+                    self.reloader_settings.feature.clone(),
                 ));
                 Task::batch([listen_for_lib_changes, watch])
             }
@@ -1162,6 +1168,7 @@ where
     fn build_library(
         lib_crate_name: &'static str,
         target_dir: String,
+        feature: Option<String>,
     ) -> impl Stream<Item = Message<P>> {
         stream::channel(200, async move |mut output| {
             let metadata = MetadataCommand::new()
@@ -1176,7 +1183,7 @@ where
 
             let result = Command::new("cargo")
                 .current_dir(workspace_root)
-                .args(build_args(lib_crate_name))
+                .args(build_args(lib_crate_name, feature.as_deref()))
                 .environment_variables(&target_dir)
                 .stderr(Stdio::piped())
                 .spawn();
@@ -1228,6 +1235,7 @@ where
         watch_dir: Utf8PathBuf,
         lib_crate_name: &'static str,
         target_dir: String,
+        feature: Option<String>,
     ) -> impl Stream<Item = Message<P>> {
         stream::channel(200, async move |mut output| {
             let metadata = MetadataCommand::new()
@@ -1253,7 +1261,7 @@ where
                 .arg("-d")
                 .arg("0.01")
                 .arg("-x")
-                .arg(build_args(lib_crate_name).join(" "))
+                .arg(build_args(lib_crate_name, feature.as_deref()).join(" "))
                 .environment_variables(&target_dir)
                 .stderr(Stdio::piped());
 
@@ -1573,8 +1581,8 @@ where
     }
 }
 
-fn build_args(library_name: &str) -> [&str; 8] {
-    [
+fn build_args<'a>(library_name: &'a str, feature: Option<&'a str>) -> Vec<&'a str> {
+    let mut args = vec![
         "rustc",
         "--package",
         library_name,
@@ -1583,7 +1591,12 @@ fn build_args(library_name: &str) -> [&str; 8] {
         "cdylib",
         "--profile",
         "dev",
-    ]
+    ];
+    if let Some(feature) = feature {
+        args.push("--features");
+        args.push(feature);
+    }
+    args
 }
 
 trait EnvVariables {
