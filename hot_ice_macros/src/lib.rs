@@ -149,6 +149,21 @@ mod hot_state;
 ///
 /// Removed fields are silently ignored during deserialization, so you can
 /// safely remove fields without breaking existing sessions.
+///
+/// # Conditional Compilation
+///
+/// Use `feature = "..."` to conditionally enable hot state based on a feature flag:
+///
+/// ```rust,ignore
+/// #[hot_ice::hot_state(feature = "hot-reload")]
+/// #[derive(Debug, Clone)]
+/// pub struct State {
+///     counter: i32,
+/// }
+/// ```
+///
+/// When the feature is not enabled, the struct is emitted unchanged
+/// (without serialization derives or FFI functions).
 #[proc_macro_attribute]
 pub fn hot_state(
     attr: proc_macro::TokenStream,
