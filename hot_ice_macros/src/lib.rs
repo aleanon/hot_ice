@@ -8,22 +8,6 @@
 //!
 //! ## Quick Start
 //!
-//! ### View-Only Hot Reloading (Simplest)
-//!
-//! For iterating on UI without full message hot reloading:
-//!
-//! ```rust,ignore
-//! impl State {
-//!     #[hot_ice::hot_fn(cold_message)]
-//!     pub fn view(&self) -> Element<'_, Message> {
-//!         // Your view code - hot reloadable!
-//!     }
-//!
-//!     // Other functions don't need macros
-//!     pub fn update(&mut self, message: Message) -> Task<Message> { /* ... */ }
-//! }
-//! ```
-//!
 //! ### Message Hot Reloading
 //!
 //! For hot reloading all message-returning functions:
@@ -167,10 +151,10 @@ mod hot_state;
 /// safely remove fields without breaking existing sessions.
 #[proc_macro_attribute]
 pub fn hot_state(
-    _attr: proc_macro::TokenStream,
+    attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    crate::hot_state::hot_state(_attr, item)
+    crate::hot_state::hot_state(attr, item)
 }
 
 /// Transforms a function for hot reloading support.
@@ -232,20 +216,6 @@ pub fn hot_state(
 /// The function still gets the wrapper transformation but without
 /// `#[unsafe(no_mangle)]`, so it won't be exported for dynamic loading.
 ///
-/// ## `cold_message` / `cold-message`
-///
-/// For `view` only - keeps the original `Message` type instead of `HotMessage`:
-///
-/// ```rust,ignore
-/// #[hot_ice::hot_fn(cold_message)]
-/// pub fn view(&self) -> Element<'_, Message> {
-///     // Returns Element<Message>, not Element<HotMessage>
-/// }
-/// ```
-///
-/// Use this when you only want view hot reloading without message
-/// type conversion overhead.
-///
 /// ## `feature = "..."`
 ///
 /// Conditionally enables hot reloading based on a feature flag:
@@ -278,27 +248,6 @@ pub fn hot_state(
 /// ```
 ///
 /// # Examples
-///
-/// ## View-Only Hot Reloading
-///
-/// The simplest setup - only hot reload the view:
-///
-/// ```rust,ignore
-/// impl State {
-///     pub fn boot() -> (State, Task<Message>) {
-///         (State::default(), Task::none())
-///     }
-///
-///     pub fn update(&mut self, message: Message) -> Task<Message> {
-///         Task::none()
-///     }
-///
-///     #[hot_ice::hot_fn(cold_message)]
-///     pub fn view(&self) -> Element<'_, Message> {
-///         text("Hello, World!").into()
-///     }
-/// }
-/// ```
 ///
 /// ## Full Message Hot Reloading
 ///

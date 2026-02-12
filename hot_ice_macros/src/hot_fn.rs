@@ -76,15 +76,13 @@ pub fn hot_fn(
     // For subscription/update, also check for not_hot/not-hot (legacy support)
     let attr_str = attr.to_string();
     let is_hot = !attr_str.contains("not_hot") && !attr_str.contains("not-hot");
-    // For view, check for cold-message/cold_message
-    let cold_message = attr_str.contains("cold-message") || attr_str.contains("cold_message");
 
     let fn_type = detect_fn_type(&input);
 
     let generated_code = match fn_type {
         FnType::Boot => boot(hot_state, item),
         FnType::Update => update(hot_state, is_hot, item),
-        FnType::View => view(hot_state, cold_message, item),
+        FnType::View => view(hot_state, item),
         FnType::Subscription => subscription(hot_state, is_hot, item),
         FnType::Theme => theme(hot_state, item),
         FnType::Style => style(hot_state, item),
@@ -108,16 +106,27 @@ pub fn hot_fn(
         }
     };
 
-    // If a feature is specified, wrap the generated code with feature gates
+    // If a feature is specified, wrap the generated code with feature gates.
+    // The generated code may contain multiple items (e.g. export_executor!(),
+    // wrapper fn, inner fn). `#[cfg]` only applies to the single next item,
+    // so we must apply it to each item individually.
     if let Some(feature_name) = args.feature {
         let generated_tokens = proc_macro2::TokenStream::from(generated_code);
         let original_tokens = proc_macro2::TokenStream::from(item_clone2);
 
         let feature_lit = syn::LitStr::new(&feature_name, proc_macro2::Span::call_site());
+        let cfg_attr: syn::Attribute = syn::parse_quote!(#[cfg(feature = #feature_lit)]);
+
+        // Parse generated output into individual items and gate each one
+        let file: syn::File =
+            syn::parse2(generated_tokens).expect("generated code should be valid items");
+        let gated_items = file.items.into_iter().map(|item| {
+            let cfg = &cfg_attr;
+            quote! { #cfg #item }
+        });
 
         let wrapped = quote! {
-            #[cfg(feature = #feature_lit)]
-            #generated_tokens
+            #( #gated_items )*
 
             #[cfg(not(feature = #feature_lit))]
             #original_tokens
@@ -441,11 +450,7 @@ fn update(hot_state: bool, is_hot: bool, item: proc_macro::TokenStream) -> proc_
     proc_macro::TokenStream::from(expanded)
 }
 
-fn view(
-    hot_state: bool,
-    cold_message: bool,
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
+fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut input = parse_macro_input!(item as syn::ItemFn);
 
     let original_fn_name = input.sig.ident.clone();
@@ -455,18 +460,10 @@ fn view(
 
     let vis = &input.vis;
 
-    // Extract the inner type from the return type (without the arrow)
-    let inner_return_type = if cold_message {
-        match &input.sig.output {
-            syn::ReturnType::Default => quote! { () },
-            syn::ReturnType::Type(_, ty) => quote! { #ty },
-        }
-    } else {
-        let transformed = transform_element_return_type(&input.sig.output);
-        match transformed {
-            syn::ReturnType::Default => quote! { () },
-            syn::ReturnType::Type(_, ty) => quote! { #ty },
-        }
+    let transformed = transform_element_return_type(&input.sig.output);
+    let inner_return_type = match transformed {
+        syn::ReturnType::Default => quote! { () },
+        syn::ReturnType::Type(_, ty) => quote! { #ty },
     };
 
     let load_font_ident =
@@ -491,84 +488,43 @@ fn view(
         }
     };
 
-    // If cold_message is set, don't map to HotMessage
     let expanded = if hot_state {
-        if cold_message {
-            quote! {
-                #[unsafe(no_mangle)]
-                #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
-                        Self::#inner_fn_ident(state.ref_state())
-                    }) {
-                        ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err_msg) => {
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
-                        }
-                    })
-                }
-
-                #input
-
-                #load_font_fn
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<#inner_return_type> {
+                hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
+                    Self::#inner_fn_ident(state.ref_state())
+                        .map(hot_ice::macro_use::DynMessage::into_hot_message)
+                }) {
+                    ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
+                    ::core::result::Result::Err(err_msg) => {
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
+                    }
+                })
             }
-        } else {
-            quote! {
-                #[unsafe(no_mangle)]
-                #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
-                        Self::#inner_fn_ident(state.ref_state())
-                            .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                    }) {
-                        ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err_msg) => {
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
-                        }
-                    })
-                }
 
-                #input
+            #input
 
-                #load_font_fn
-            }
+            #load_font_fn
         }
     } else {
-        if cold_message {
-            quote! {
-                #[unsafe(no_mangle)]
-                #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
-                        self.#inner_fn_ident()
-                    }) {
-                        ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err_msg) => {
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
-                        }
-                    })
-                }
-
-                #input
-
-                #load_font_fn
+        quote! {
+            #[unsafe(no_mangle)]
+            #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<#inner_return_type> {
+                hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
+                    self.#inner_fn_ident()
+                        .map(hot_ice::macro_use::DynMessage::into_hot_message)
+                }) {
+                    ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
+                    ::core::result::Result::Err(err_msg) => {
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
+                    }
+                })
             }
-        } else {
-            quote! {
-                #[unsafe(no_mangle)]
-                #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<#inner_return_type> {
-                    hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
-                        self.#inner_fn_ident()
-                            .map(hot_ice::macro_use::DynMessage::into_hot_message)
-                    }) {
-                        ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
-                        ::core::result::Result::Err(err_msg) => {
-                            ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
-                        }
-                    })
-                }
 
-                #input
+            #input
 
-                #load_font_fn
-            }
+            #load_font_fn
         }
     };
 

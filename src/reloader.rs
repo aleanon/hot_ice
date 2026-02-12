@@ -1009,7 +1009,7 @@ where
                     if let Ok(mut state) = self.title_fn_state.lock() {
                         *state = fn_state;
                     }
-                    format!("Reloading: {}", title)
+                    format!("Hot-Reloading: {}", title)
                 }
                 Err(err) => {
                     log::error!("title(): {}", err);

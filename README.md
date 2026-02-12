@@ -10,7 +10,7 @@ Edit your GUI code and see changes instantly without restarting your application
 
 - **True Hot Reloading** - Update your UI code without restarting the application
 - **State Preservation** - Application state persists across reloads
-- **Three Reload Modes** - Choose the level of hot reloading that fits your needs
+- **Two Reload Modes** - Choose the level of hot reloading that fits your needs
 - **Automatic Compilation** - Built-in file watcher triggers incremental builds
 - **Function Status Display** - Visual indicator shows which functions are hot-reloaded
 - **Panic Recovery** - Gracefully handles panics in hot-reloaded code
@@ -143,28 +143,9 @@ Now edit your `view` function and save - your changes appear instantly!
 
 ## Hot Reloading Modes
 
-Hot Ice supports three levels of hot reloading, each with different trade-offs:
+Hot Ice supports two levels of hot reloading, each with different trade-offs:
 
-### 1. View-Only (`cold_message`)
-
-The simplest mode - only the `view` function is hot-reloadable:
-
-```rust
-impl State {
-    // No macro needed
-    pub fn boot() -> (Self, Task<Message>) { /* ... */ }
-    
-    // No macro needed
-    pub fn update(&mut self, message: Message) -> Task<Message> { /* ... */ }
-
-    #[hot_ice::hot_fn(cold_message)]  // Only this is hot-reloadable
-    pub fn view(&self) -> Element<'_, Message> { /* ... */ }
-}
-```
-
-**Best for:** UI iteration, styling, layout tweaks
-
-### 2. Message Hot Reloading (Default)
+### 1. Message Hot Reloading (Default)
 
 All message-returning functions are hot-reloadable:
 
@@ -189,7 +170,7 @@ impl State {
 
 **Best for:** Iterating on application logic without state serialization overhead
 
-### 3. Full Hot State
+### 2. Full Hot State
 
 Hot reload everything including state structure changes:
 
@@ -221,14 +202,14 @@ impl State {
 
 ### Comparison
 
-| Feature | View-Only | Message | Hot State |
-|---------|-----------|---------|-----------|
-| Hot-reload view | Yes | Yes | Yes |
-| Hot-reload update | No | Yes | Yes |
-| Hot-reload subscription | No | Yes | Yes |
-| State type changes | Recompile | Recompile | Hot reload |
-| Serialization required | No | No | Yes |
-| Setup complexity | Minimal | Low | Medium |
+| Feature | Message | Hot State |
+|---------|---------|-----------|
+| Hot-reload view | Yes | Yes |
+| Hot-reload update | Yes | Yes |
+| Hot-reload subscription | Yes | Yes |
+| State type changes | Recompile | Hot reload |
+| Serialization required | No | Yes |
+| Setup complexity | Low | Medium |
 
 ## Application Builder
 
@@ -275,7 +256,6 @@ Transforms functions for hot reloading. Supports these arguments:
 | *(none)* | Default hot reloading with message conversion |
 | `hot_state` | Use with `#[hot_state]` for state persistence |
 | `not_hot` | Disable hot reloading for this function |
-| `cold_message` | Keep original Message type (view only) |
 | `feature = "..."` | Conditional compilation |
 
 ### `#[hot_state]`
@@ -332,7 +312,6 @@ The `examples/` directory contains complete working examples:
 
 | Example | Description |
 |---------|-------------|
-| [`hot_view`](./examples/hot_view/) | View-only hot reloading (simplest setup) |
 | [`hot_message`](./examples/hot_message/) | hot reload message type changes |
 | [`hot_state`](./examples/hot_state/) | Full state persistence |
 | [`manual_reload`](./examples/manual_reload/) | Manual compilation control |

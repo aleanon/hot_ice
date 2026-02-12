@@ -1,9 +1,0 @@
-
-[workspace]
-package.edition = "2024"
-package.version = "0.1.0"
-members = ["hot_view", "ui"]
-
-[workspace.dependencies]
-hot_ice = { path = "../.." }
-ui = { path = "ui" }
