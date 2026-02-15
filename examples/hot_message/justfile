@@ -2,4 +2,4 @@ default:
     @just --list
 
 run:
-    cargo run --release
+    cargo run --release --features reload

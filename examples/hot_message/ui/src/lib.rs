@@ -20,7 +20,7 @@ pub struct State {
 }
 
 impl State {
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn boot() -> (State, Task<Message>) {
         let (counter, counter_task) = counter::State::boot();
         let (todo_list, todo_task) = todo_list::State::boot();
@@ -40,7 +40,7 @@ impl State {
         )
     }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Counter(msg) => self.counter.update(msg).map(Message::Counter),
@@ -49,7 +49,7 @@ impl State {
         }
     }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn view(&self) -> Element<'_, Message> {
         let content = column![
             text("Hot State Example").size(34),
@@ -76,7 +76,7 @@ impl State {
             .into()
     }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             self.counter.subscription().map(Message::Counter),

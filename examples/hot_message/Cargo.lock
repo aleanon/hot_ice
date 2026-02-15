@@ -262,6 +262,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3c3baedf037b161e69da9200947329f52afa3b6e1cdbe6f344d6aa350fedd2f"
 
 [[package]]
+name = "bin"
+version = "0.1.0"
+dependencies = [
+ "hot_ice",
+ "tracing",
+ "tracing-error",
+ "tracing-subscriber",
+ "ui",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1287,17 +1298,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "hot_message"
-version = "0.1.0"
-dependencies = [
- "hot_ice",
- "tracing",
- "tracing-error",
- "tracing-subscriber",
- "ui",
 ]
 
 [[package]]

@@ -3,6 +3,9 @@ name = "ui"
 version.workspace = true
 edition.workspace = true
 
+[features]
+reload = []
+
 [dependencies]
 hot_ice.workspace = true
 serde.workspace = true

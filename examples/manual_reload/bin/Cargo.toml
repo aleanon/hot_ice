@@ -1,10 +1,10 @@
 [package]
-name = "manual_reload"
+name = "bin"
 version.workspace = true
 edition.workspace = true
 
 [features]
-reload = []
+reload = ["ui/reload"]
 
 [dependencies]
 ui.workspace = true
