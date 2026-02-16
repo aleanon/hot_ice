@@ -15,7 +15,7 @@ fn main() {
         ..Default::default()
     };
 
-    let app = application(State::boot, State::update, State::view)
+    let app = application(State::new, State::update, State::view)
         .subscription(State::subscription)
         .theme(State::theme)
         .style(State::style)

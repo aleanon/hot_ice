@@ -139,7 +139,7 @@ impl Default for State {
 }
 
 impl State {
-    pub fn boot() -> (State, Task<Message>) {
+    pub fn new() -> (State, Task<Message>) {
         (
             State {
                 theme: ThemeChoice::Dark,

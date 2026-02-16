@@ -19,7 +19,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn boot() -> (State, Task<Message>) {
+    pub fn new() -> (State, Task<Message>) {
         (
             State {
                 value: 0,

@@ -22,10 +22,10 @@ pub struct State {
 
 impl State {
     #[hot_ice::hot_fn(hot_state, feature = "reload")]
-    pub fn boot() -> (State, Task<Message>) {
-        let (counter, counter_task) = counter::State::boot();
-        let (todo_list, todo_task) = todo_list::State::boot();
-        let (settings, settings_task) = settings::State::boot();
+    pub fn new() -> (State, Task<Message>) {
+        let (counter, counter_task) = counter::State::new();
+        let (todo_list, todo_task) = todo_list::State::new();
+        let (settings, settings_task) = settings::State::new();
 
         (
             State {
