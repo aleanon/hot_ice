@@ -12,10 +12,11 @@ fn main() {
 
     #[cfg(feature = "reload")]
     let reloader_settings = hot_ice::ReloaderSettings {
-        feature: Some("reload".to_string())..Default::default(),
+        feature: Some("reload".to_string()),
+        ..Default::default()
     };
 
-    let app = application(State::boot, State::update, State::view)
+    let app = application(State::new, State::update, State::view)
         .subscription(State::subscription)
         .theme(State::theme)
         .style(State::style)

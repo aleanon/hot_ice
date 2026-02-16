@@ -1,6 +1,5 @@
 use hot_ice::iced::widget::{button, checkbox, column, container, row, text, text_input};
 use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -23,7 +22,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn boot() -> (State, Task<Message>) {
+    pub fn new() -> (State, Task<Message>) {
         (
             State {
                 input: String::new(),

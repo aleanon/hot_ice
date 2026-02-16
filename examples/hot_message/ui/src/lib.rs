@@ -1,5 +1,5 @@
 use hot_ice::iced::widget::{column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
+use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
 
 pub mod counter;
 pub mod settings;
@@ -21,10 +21,10 @@ pub struct State {
 
 impl State {
     #[hot_ice::hot_fn(feature = "reload")]
-    pub fn boot() -> (State, Task<Message>) {
-        let (counter, counter_task) = counter::State::boot();
-        let (todo_list, todo_task) = todo_list::State::boot();
-        let (settings, settings_task) = settings::State::boot();
+    pub fn new() -> (State, Task<Message>) {
+        let (counter, counter_task) = counter::State::new();
+        let (todo_list, todo_task) = todo_list::State::new();
+        let (settings, settings_task) = settings::State::new();
 
         (
             State {
