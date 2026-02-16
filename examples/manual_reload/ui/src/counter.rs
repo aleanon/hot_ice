@@ -1,5 +1,5 @@
 use hot_ice::iced::widget::{button, column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, window};
+use hot_ice::iced::{Element, Length, Subscription, Task};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn boot() -> (State, Task<Message>) {
+    pub fn new() -> (State, Task<Message>) {
         (
             State {
                 value: 0,
