@@ -17,7 +17,7 @@ use hot_ice_common::{
 };
 use iced::Border;
 use iced_core::{
-    Alignment, Animation, Background, Color, Element, Length, Padding, Settings, Theme,
+    Alignment, Animation, Background, Color, Element, Font, Length, Padding, Settings, Theme,
     animation::Easing,
     theme::{self, Base, Mode},
     time::Instant,
@@ -25,13 +25,13 @@ use iced_core::{
 };
 use iced_futures::{
     BoxStream, Subscription,
-    futures::{Stream, StreamExt},
+    futures::{SinkExt, Stream, StreamExt},
     stream,
     subscription::{self as iced_subscription, EventStream, Hasher, Recipe},
 };
 use iced_widget::{
-    Stack, Text, button, column, container, container::Style as ContainerStyle, row, sensor, space,
-    text::Style as TextStyle, themer,
+    Stack, Text, button, column, container, container::Style as ContainerStyle, row, scrollable,
+    sensor, space, text::Style as TextStyle, themer,
 };
 use iced_winit::{
     program::Program,
@@ -261,6 +261,8 @@ where
     DismissError(HotFunction),
     ToggleErrorExpand(HotFunction),
     AnimationTick(Instant),
+    CompilationOutput(String),
+    ClearCompilationOutput,
 }
 
 impl<P> Clone for Message<P>
@@ -281,6 +283,8 @@ where
             Self::DismissError(func) => Self::DismissError(*func),
             Self::ToggleErrorExpand(func) => Self::ToggleErrorExpand(*func),
             Self::AnimationTick(t) => Self::AnimationTick(*t),
+            Self::CompilationOutput(s) => Self::CompilationOutput(s.clone()),
+            Self::ClearCompilationOutput => Self::ClearCompilationOutput,
         }
     }
 }
@@ -299,6 +303,8 @@ impl<P: HotProgram> Debug for Message<P> {
             Self::DismissError(func) => write!(f, "DismissError({})", func),
             Self::ToggleErrorExpand(func) => write!(f, "ToggleErrorExpand({})", func),
             Self::AnimationTick(_) => write!(f, "AnimationTick"),
+            Self::CompilationOutput(line) => write!(f, "CompilationOutput({})", line),
+            Self::ClearCompilationOutput => write!(f, "ClearCompilationOutput"),
         }
     }
 }
@@ -387,8 +393,6 @@ enum ReloaderState {
 pub enum ReloaderError {
     #[error("Failed to build command {0}")]
     FailedToBuildCommand(String),
-    #[error("Compilation error: {0}")]
-    CompilationError(String),
 }
 
 type UpdateChannel = (MTx<ReadyToReload>, MAsyncRx<ReadyToReload>);
@@ -413,6 +417,7 @@ pub struct Reloader<P: HotProgram + 'static> {
     update_channel: UpdateChannel,
     loaded_fonts: Vec<Cow<'static, [u8]>>,
     active_errors: Mutex<HashMap<HotFunction, ErrorEntry>>,
+    compilation_output: Vec<String>,
 }
 
 impl<'a, P> Reloader<P>
@@ -448,6 +453,7 @@ where
             update_channel: mpmc::bounded_tx_blocking_rx_async(1),
             loaded_fonts: fonts,
             active_errors: Mutex::new(HashMap::new()),
+            compilation_output: Vec::new(),
         };
 
         let task = if reloader_settings.compile_in_reloader {
@@ -504,7 +510,16 @@ where
                     }
                 }
             }
+            Message::CompilationOutput(line) => {
+                self.compilation_output.push(line);
+                Task::none()
+            }
+            Message::ClearCompilationOutput => {
+                self.compilation_output.clear();
+                Task::none()
+            }
             Message::CompilationComplete => {
+                self.compilation_output.clear();
                 let mut lib_reloader = LibReloader::new(
                     &self.reloader_settings.lib_dir,
                     self.lib_name,
@@ -831,10 +846,34 @@ where
                 with_default_theme(Element::from(error_text))
             }
             ReloaderState::Compiling => {
-                let compilation_message =
-                    container(Text::new("Compiling...").size(20)).center(Length::Fill);
+                let lines = column(self.compilation_output.iter().map(|line| {
+                    Text::new(line.clone())
+                        .font(Font::MONOSPACE)
+                        .size(12)
+                        .into()
+                }))
+                .spacing(2);
 
-                with_default_theme(Element::from(compilation_message))
+                let terminal = container(
+                    scrollable(lines)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .anchor_bottom(),
+                )
+                .style(|_| ContainerStyle {
+                    background: Some(Background::Color(Color::BLACK)),
+                    ..Default::default()
+                })
+                .padding(30)
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+                let outer = container(terminal)
+                    .padding(40)
+                    .width(Length::Fill)
+                    .height(Length::Fill);
+
+                with_default_theme(Element::from(outer))
             }
         };
 
@@ -1175,57 +1214,81 @@ where
                 .exec()
                 .expect("Failed to get cargo metadata");
 
-            let workspace_root = metadata.workspace_root.as_std_path();
-            info!(
-                "Working directory for build command: {}",
-                workspace_root.display()
-            );
+            let workspace_root = metadata.workspace_root.into_std_path_buf();
 
-            let result = Command::new("cargo")
-                .current_dir(workspace_root)
-                .args(build_args(lib_crate_name, feature.as_deref()))
-                .environment_variables(&target_dir)
-                .stderr(Stdio::piped())
-                .spawn();
+            loop {
+                info!(
+                    "Working directory for build command: {}",
+                    workspace_root.display()
+                );
 
-            let mut child = match result {
-                Ok(child) => child,
-                Err(err) => {
-                    if let Err(err) = output.try_send(Message::Error(
-                        ReloaderError::FailedToBuildCommand(err.to_string()),
-                    )) {
-                        log::error!("Failed to send Message: {}", err);
-                    }
-                    return;
-                }
-            };
+                let result = Command::new("cargo")
+                    .current_dir(&workspace_root)
+                    .args(build_args(lib_crate_name, feature.as_deref()))
+                    .environment_variables(&target_dir)
+                    .stderr(Stdio::piped())
+                    .spawn();
 
-            let stderr = child.stderr.take().unwrap();
-            let stderr_reader = BufReader::new(stderr);
-
-            for line in stderr_reader.lines() {
-                match line {
-                    Ok(line) => {
-                        log::info!("{}", line);
-                    }
+                let mut child = match result {
+                    Ok(child) => child,
                     Err(err) => {
-                        log::error!("Failed to read line from stderr: {}", err);
+                        if let Err(err) = output.try_send(Message::Error(
+                            ReloaderError::FailedToBuildCommand(err.to_string()),
+                        )) {
+                            log::error!("Failed to send Message: {}", err);
+                        }
+                        return;
                     }
                 };
-            }
-            match child.wait() {
-                Ok(status) => {
-                    let message = if status.success() {
-                        Message::CompilationComplete
-                    } else {
-                        Message::Error(ReloaderError::CompilationError(status.to_string()))
-                    };
-                    if let Err(err) = output.try_send(message) {
-                        log::error!("Failed to send message: {err}");
+
+                let stderr = child.stderr.take().unwrap();
+
+                // Read stderr on a background thread so we can await each send,
+                // giving the runtime a chance to drain the channel and render.
+                let (line_tx, mut line_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<String>(16);
+                std::thread::spawn(move || {
+                    let stderr_reader = BufReader::new(stderr);
+                    for line in stderr_reader.lines() {
+                        match line {
+                            Ok(line) => {
+                                if line_tx.clone().try_send(line).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                log::error!("Failed to read line from stderr: {}", err);
+                            }
+                        }
                     }
+                });
+
+                while let Some(line) = line_rx.next().await {
+                    let _ = output.send(Message::CompilationOutput(line)).await;
                 }
-                Err(err) => {
-                    log::error!("Failed to wait for child process: {}", err);
+
+                match child.wait() {
+                    Ok(status) => {
+                        if status.success() {
+                            let _ = output.try_send(Message::CompilationComplete);
+                            return;
+                        }
+                        // Compilation failed — keep the error output visible,
+                        // then clear and retry.
+                        log::warn!("Compilation failed ({}), retrying in 3s...", status);
+                        let _ = output
+                            .send(Message::CompilationOutput(
+                                "\n--- Compilation failed, retrying in 3 seconds... ---"
+                                    .to_string(),
+                            ))
+                            .await;
+                        futures_timer::Delay::new(Duration::from_secs(3)).await;
+                        let _ = output.send(Message::ClearCompilationOutput).await;
+                    }
+                    Err(err) => {
+                        log::error!("Failed to wait for child process: {}", err);
+                        return;
+                    }
                 }
             }
         })
