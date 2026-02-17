@@ -1,5 +1,4 @@
 #![feature(downcast_unchecked)]
-#![feature(min_specialization)]
 
 #[cfg(target_os = "macos")]
 mod codesign;

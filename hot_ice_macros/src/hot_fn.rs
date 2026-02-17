@@ -1,10 +1,9 @@
 use hot_ice_common::LOAD_FONT_FUNCTION_NAME;
-use quote::{quote, quote_spanned};
+use quote::quote;
 use syn::{
     Ident, Token,
     parse::{Parse, ParseStream},
     parse_macro_input,
-    spanned::Spanned,
 };
 
 // Used to make sure the generated code does not conflict with user-defined functions
@@ -45,11 +44,7 @@ enum FnType {
     Update,
     View,
     Subscription,
-    Theme,
-    Style,
-    ScaleFactor,
-    Title,
-    Unknown,
+    Other,
 }
 
 pub fn hot_fn(
@@ -84,26 +79,7 @@ pub fn hot_fn(
         FnType::Update => update(hot_state, is_hot, item),
         FnType::View => view(hot_state, item),
         FnType::Subscription => subscription(hot_state, is_hot, item),
-        FnType::Theme => theme(hot_state, item),
-        FnType::Style => style(hot_state, item),
-        FnType::ScaleFactor => scale_factor(hot_state, item),
-        FnType::Title => title(hot_state, item),
-        FnType::Unknown => {
-            let msg = "Unsupported function, supported functions are\n
-                .boot\n
-                .update\n
-                .view\n
-                .subscription\n
-                .theme\n
-                .style\n
-                .scale_factor\n
-                .title";
-
-            let tokens = quote_spanned! {input.span() =>
-                compile_error!(#msg);
-            };
-            return tokens.into();
-        }
+        FnType::Other => generate_simple_wrapper(hot_state, item),
     };
 
     // If a feature is specified, wrap the generated code with feature gates.
@@ -159,27 +135,15 @@ fn detect_fn_type(input: &syn::ItemFn) -> FnType {
         if return_type_str.contains("Subscription") {
             return FnType::Subscription;
         }
-        if return_type_str.contains("Option") && return_type_str.contains("Theme") {
-            return FnType::Theme;
-        }
-        if return_type_str.contains("f32") {
-            return FnType::ScaleFactor;
-        }
-        if return_type_str.contains("String") {
-            return FnType::Title;
-        }
     }
 
     if inputs.len() == 2 {
         if return_type_str.contains("Task") {
             return FnType::Update;
         }
-        if return_type_str.contains("Style") {
-            return FnType::Style;
-        }
     }
 
-    FnType::Unknown
+    FnType::Other
 }
 
 fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -631,7 +595,11 @@ fn extract_simple_fn_info(input: &syn::ItemFn) -> SimpleFnInfo {
 
 /// Generates a simple panic-catching wrapper function that returns HotResult<T>.
 /// Used by theme, style, scale_factor, and title.
-fn generate_simple_wrapper(hot_state: bool, mut input: syn::ItemFn) -> proc_macro::TokenStream {
+fn generate_simple_wrapper(
+    hot_state: bool,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemFn);
     let SimpleFnInfo {
         original_fn_name,
         inner_fn_ident,
@@ -669,24 +637,4 @@ fn generate_simple_wrapper(hot_state: bool, mut input: syn::ItemFn) -> proc_macr
     };
 
     proc_macro::TokenStream::from(expanded)
-}
-
-fn theme(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(item as syn::ItemFn);
-    generate_simple_wrapper(hot_state, input)
-}
-
-fn style(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(item as syn::ItemFn);
-    generate_simple_wrapper(hot_state, input)
-}
-
-fn scale_factor(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(item as syn::ItemFn);
-    generate_simple_wrapper(hot_state, input)
-}
-
-fn title(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(item as syn::ItemFn);
-    generate_simple_wrapper(hot_state, input)
 }
