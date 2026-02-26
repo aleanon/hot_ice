@@ -78,43 +78,6 @@ pub fn hot_state(
 fn generate_hot_state(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut ast = parse_macro_input!(item as syn::DeriveInput);
 
-    let mut has_deserialize = false;
-    let mut has_serialize = false;
-    let mut has_default = false;
-
-    for attr in &ast.attrs {
-        if attr.path().is_ident("derive") {
-            let token_str = quote::ToTokens::to_token_stream(&attr.meta).to_string();
-            if token_str.contains("Deserialize") {
-                has_deserialize = true;
-            }
-            if token_str.contains("Serialize") {
-                has_serialize = true;
-            }
-            if token_str.contains("Default") {
-                has_default = true;
-            }
-        }
-    }
-
-    // Collect all missing derives
-    let mut derives = vec![];
-
-    if !has_serialize {
-        derives.push(quote! { hot_ice::serde_derive::Serialize });
-    }
-    if !has_deserialize {
-        derives.push(quote! { hot_ice::serde_derive::Deserialize });
-    }
-    if !has_default {
-        derives.push(quote! { ::core::default::Default });
-    }
-
-    if !derives.is_empty() {
-        let deser_attr: syn::Attribute = syn::parse_quote!(#[derive(#(#derives),*)]);
-        ast.attrs.push(deser_attr);
-    }
-
     let mut has_struct_default = false;
     for attr in &ast.attrs {
         if attr.path().is_ident("hot_ice::serde") {
@@ -151,8 +114,7 @@ fn generate_hot_state(item: proc_macro::TokenStream) -> proc_macro::TokenStream 
         #ast
 
         impl #struct_name {
-            /// Serialize state and return raw pointer + length
-            /// Caller must call free_serialized_data to free the memory
+
             #[unsafe(no_mangle)]
             pub fn #serialize_state_ident(
                 state: &hot_ice::macro_use::HotState,
