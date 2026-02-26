@@ -1,5 +1,5 @@
 use hot_ice::iced::widget::{button, checkbox, column, container, row, text, text_input};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
+use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, time, window};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -117,18 +117,6 @@ impl State {
 
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::none()
-    }
-
-    pub fn theme(&self) -> Theme {
-        Theme::Dark
-    }
-
-    pub fn style(&self, theme: &Theme) -> theme::Style {
-        theme::default(theme)
-    }
-
-    pub fn scale_factor(&self) -> f32 {
-        1.0
     }
 
     pub fn title(&self, _window: window::Id) -> String {

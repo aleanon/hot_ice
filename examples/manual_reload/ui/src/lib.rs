@@ -1,5 +1,6 @@
 use hot_ice::iced::widget::{column, container, row, text};
 use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
+use serde::{Deserialize, Serialize};
 
 pub mod counter;
 pub mod settings;
@@ -13,7 +14,7 @@ pub enum Message {
 }
 
 #[hot_ice::hot_state(feature = "reload")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct State {
     counter: counter::State,
     todo_list: todo_list::State,

@@ -77,22 +77,6 @@ impl State {
         Subscription::none()
     }
 
-    pub fn theme(&self) -> Theme {
-        Theme::Dark
-    }
-
-    pub fn style(&self, theme: &Theme) -> theme::Style {
-        theme::default(theme)
-    }
-
-    pub fn scale_factor(&self) -> f32 {
-        1.0
-    }
-
-    pub fn title(&self, _window: window::Id) -> String {
-        format!("Counter: {}", self.value)
-    }
-
     pub fn value(&self) -> i32 {
         self.value
     }
