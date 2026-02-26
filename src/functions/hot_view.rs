@@ -71,7 +71,7 @@ impl<'a, F, State, Message, Theme, Renderer> HotView<F, State, Message, Theme, R
 where
     F: IntoHotView<'a, State, Message, Theme, Renderer>,
     Renderer: iced_core::Renderer + iced_core::text::Renderer + 'a,
-    Theme: iced_widget::text::Catalog + iced_widget::container::Catalog + 'a,
+    Theme: 'a,
     Message: 'a,
 {
     pub fn new(function: F) -> Self {

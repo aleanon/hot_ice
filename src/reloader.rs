@@ -15,9 +15,9 @@ use hot_ice_common::{
     DESERIALIZE_STATE_FUNCTION_NAME, FREE_SERIALIZED_DATA_FUNCTION_NAME,
     SERIALIZE_STATE_FUNCTION_NAME,
 };
-use iced::Border;
 use iced_core::{
-    Alignment, Animation, Background, Color, Element, Font, Length, Padding, Settings, Theme,
+    Alignment, Animation, Background, Border, Color, Element, Font, Length, Padding, Settings,
+    Theme,
     animation::Easing,
     theme::{self, Base, Mode},
     time::Instant,
