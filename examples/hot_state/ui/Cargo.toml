@@ -4,8 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-reload = []
+reload = ["hot_ice"]
 
 [dependencies]
-hot_ice.workspace = true
+hot_ice = { path = "../../..", optional = true }
+iced.workspace = true
 serde.workspace = true

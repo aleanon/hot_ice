@@ -5,7 +5,7 @@ use ui::State;
 #[cfg(feature = "reload")]
 use hot_ice::application;
 #[cfg(not(feature = "reload"))]
-use hot_ice::iced::application;
+use iced::application;
 
 fn main() {
     init_tracing();

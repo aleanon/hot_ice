@@ -1,5 +1,5 @@
-use hot_ice::iced::widget::{column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
+use iced::widget::{column, container, row, text};
+use iced::{Element, Length, Subscription, Task, Theme, theme};
 use serde::{Deserialize, Serialize};
 
 pub mod counter;
@@ -13,7 +13,7 @@ pub enum Message {
     Settings(settings::Message),
 }
 
-#[hot_ice::hot_state(feature = "reload")]
+#[cfg_attr(feature = "reload", hot_ice::hot_state)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct State {
     counter: counter::State,
@@ -22,7 +22,7 @@ pub struct State {
 }
 
 impl State {
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn new() -> (State, Task<Message>) {
         let (counter, counter_task) = counter::State::new();
         let (todo_list, todo_task) = todo_list::State::new();
@@ -42,7 +42,7 @@ impl State {
         )
     }
 
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Counter(msg) => self.counter.update(msg).map(Message::Counter),
@@ -51,7 +51,7 @@ impl State {
         }
     }
 
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn view(&self) -> Element<'_, Message> {
         let content = column![
             text("Hot State Example").size(34),
@@ -78,7 +78,7 @@ impl State {
             .into()
     }
 
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             self.counter.subscription().map(Message::Counter),
@@ -87,22 +87,22 @@ impl State {
         ])
     }
 
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn theme(&self) -> Option<Theme> {
         Some(self.settings.theme())
     }
 
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn style(&self, theme: &Theme) -> theme::Style {
         self.settings.style(theme)
     }
 
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn scale_factor(&self) -> f32 {
         self.settings.scale_factor()
     }
 
-    #[hot_ice::hot_fn(hot_state, feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn(hot_state))]
     pub fn title(&self) -> String {
         format!("Hot State Example - Counter: {}", self.counter.value())
     }

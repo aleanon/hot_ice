@@ -1,5 +1,5 @@
-use hot_ice::iced::widget::{column, container, pick_list, row, slider, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme, window};
+use iced::widget::{column, container, pick_list, row, slider, text};
+use iced::{Element, Length, Subscription, Task, Theme, theme, window};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -174,14 +174,14 @@ impl State {
                 )
             ]
             .spacing(10)
-            .align_y(hot_ice::iced::Alignment::Center),
+            .align_y(iced::Alignment::Center),
             row![
                 text("Scale:").size(18),
                 slider(0.5..=2.0, self.scale, Message::ScaleChanged).step(0.1),
                 text(format!("{:.1}x", self.scale)).size(16),
             ]
             .spacing(10)
-            .align_y(hot_ice::iced::Alignment::Center),
+            .align_y(iced::Alignment::Center),
         ]
         .spacing(20);
 

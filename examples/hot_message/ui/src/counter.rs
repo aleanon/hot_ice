@@ -1,6 +1,6 @@
-use hot_ice::iced::theme;
-use hot_ice::iced::widget::{button, column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, window};
+use iced::theme;
+use iced::widget::{button, column, container, row, text};
+use iced::{Element, Length, Subscription, Task, Theme, window};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -66,7 +66,7 @@ impl State {
             .size(14),
         ]
         .spacing(20)
-        .align_x(hot_ice::iced::Alignment::Center);
+        .align_x(iced::Alignment::Center);
 
         container(content).center(Length::Fill).padding(20).into()
     }

@@ -1,5 +1,5 @@
-use hot_ice::iced::widget::{column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
+use iced::widget::{column, container, row, text};
+use iced::{Element, Length, Subscription, Task, Theme, theme};
 
 pub mod counter;
 pub mod settings;
@@ -20,7 +20,7 @@ pub struct State {
 }
 
 impl State {
-    #[hot_ice::hot_fn(feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn)]
     pub fn new() -> (State, Task<Message>) {
         let (counter, counter_task) = counter::State::new();
         let (todo_list, todo_task) = todo_list::State::new();
@@ -40,7 +40,7 @@ impl State {
         )
     }
 
-    #[hot_ice::hot_fn(feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn)]
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Counter(msg) => self.counter.update(msg).map(Message::Counter),
@@ -49,7 +49,7 @@ impl State {
         }
     }
 
-    #[hot_ice::hot_fn(feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn)]
     pub fn view(&self) -> Element<'_, Message> {
         let content = column![
             text("Hot State Example").size(34),
@@ -76,7 +76,7 @@ impl State {
             .into()
     }
 
-    #[hot_ice::hot_fn(feature = "reload")]
+    #[cfg_attr(feature = "reload", hot_ice::hot_fn)]
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             self.counter.subscription().map(Message::Counter),

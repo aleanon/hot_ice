@@ -5,6 +5,6 @@ package.version = "0.1.0"
 members = ["bin", "ui"]
 
 [workspace.dependencies]
-hot_ice = { path = "../.." }
+iced = {version = "0.14.0"}
 ui = { path = "ui" }
 serde = { version = "1.0", features = ["derive"] }

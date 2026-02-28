@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-reload = ["ui/reload"]
+reload = ["ui/reload", "hot_ice"]
 
 [dependencies]
 ui.workspace = true
-hot_ice.workspace = true
+hot_ice = { path = "../../..", optional = true }
+iced.workspace = true
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = [
     "env-filter",
