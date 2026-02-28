@@ -15,11 +15,6 @@ mod panic_hook;
 mod reloader;
 mod winit;
 
-//Re-export
-pub use iced;
-pub use serde;
-pub use serde_derive;
-
 pub use hot_application::application;
 pub use hot_ice_macros::{hot_fn, hot_state};
 pub use reloader::ReloaderSettings;
@@ -32,7 +27,3 @@ pub mod macro_use {
     pub use iced_futures;
     pub use iced_graphics::text::font_system;
 }
-
-// Re-export for the export_executor! macro (needs $crate::executor::... paths)
-// The executor module is already pub, so ErasedWorkerContext and
-// erased_worker_loop are accessible via $crate::executor::

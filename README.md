@@ -3,18 +3,14 @@
 **Hot-reloadable applications for [Iced](https://github.com/iced-rs/iced)**
 Edit your GUI code and see changes instantly without restarting your application.
 
-<!-- TODO: Add demo gif here -->
-<!-- ![Hot Ice Demo](./assets/demo.gif) -->
+![Hot Ice Demo](./assets/demo.gif)
 
 ## Features
 
-- **True Hot Reloading** - Update your UI code without restarting the application
+- **Hot Reloading** - Update your code without restarting the application
 - **State Preservation** - Application state persists across reloads
-- **Two Reload Modes** - Choose the level of hot reloading that fits your needs
 - **Automatic Compilation** - Built-in file watcher triggers incremental builds
-- **Function Status Display** - Visual indicator shows which functions are hot-reloaded
 - **Panic Recovery** - Gracefully handles panics in hot-reloaded code
-- **Full Iced Compatibility** - Works with all Iced widgets and features
 
 ## Quick Start
 
@@ -26,7 +22,7 @@ binary and hot-reloadable UI:
 ```js
 my_app/
 ├── Cargo.toml              # Workspace manifest
-├── my_app/                 # Binary crate
+├── bin/                    # Binary crate
 │   ├── Cargo.toml
 │   └── src/
 │       └── main.rs
@@ -40,7 +36,7 @@ my_app/
 
 ```toml
 [workspace]
-members = ["my_app", "ui"]
+members = ["bin", "ui"]
 
 [workspace.dependencies]
 hot_ice = { git = "https://github.com/anthropics/hot_ice" }
@@ -55,18 +51,23 @@ name = "ui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+reload = []
 
 [dependencies]
 hot_ice.workspace = true
 ```
 
-### Binary Crate (my_app/Cargo.toml)
+### Binary Crate (bin/Cargo.toml)
 
 ```toml
 [package]
-name = "my_app"
+name = "bin"
 version = "0.1.0"
 edition = "2024"
+
+[features]
+reload = ["ui/reload"]
 
 [dependencies]
 hot_ice.workspace = true
@@ -91,12 +92,12 @@ pub struct State {
 }
 
 impl State {
-    #[hot_ice::hot_fn]
-    pub fn boot() -> (Self, Task<Message>) {
+    #[hot_ice::hot_fn(feature = "reload")]
+    pub fn new() -> (Self, Task<Message>) {
         (State { value: 0 }, Task::none())
     }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Increment => self.value += 1,
@@ -105,7 +106,7 @@ impl State {
         Task::none()
     }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn view(&self) -> Element<'_, Message> {
         column![
             button("+").on_press(Message::Increment),
@@ -118,25 +119,42 @@ impl State {
 }
 ```
 
-### Main Binary (my_app/src/main.rs)
+### Main Binary (bin/src/main.rs)
 
 ```rust
 use ui::State;
 
+#[cfg(feature = "reload")]
+use hot_ice::application;
+#[cfg(not(feature = "reload"))]
+use hot_ice::iced::application;
+
 fn main() {
-    hot_ice::application(State::boot, State::update, State::view)
-        .title(|_| String::from("My Hot App"))
-        .window_size((400, 300))
-        .centered()
-        .run()
-        .unwrap();
+    #[cfg(feature = "reload")]
+    let reloader_settings = hot_ice::ReloaderSettings {
+        feature: Some("reload".to_string()),
+        ..Default::default()
+    };
+
+    let app = application(State::boot, State::update, State::view)
+        .title(|_| String::from("My Hot App"));
+
+    #[cfg(not(feature = "reload"))]
+    app.run().unwrap();
+
+    #[cfg(feature = "reload")]
+    app.reloader_settings(reloader_settings).run().unwrap();
 }
 ```
 
 ### Run
 
 ```bash
-cargo run --release
+# With hot reloading
+cargo run --features reload
+
+# Without hot reloading (normal build)
+cargo run
 ```
 
 Now edit your `view` function and save - your changes appear instantly!
@@ -145,25 +163,27 @@ Now edit your `view` function and save - your changes appear instantly!
 
 Hot Ice supports two levels of hot reloading, each with different trade-offs:
 
-### 1. Message Hot Reloading (Default)
+### 1. Hot reloading without hot state
 
-All message-returning functions are hot-reloadable:
+If you only want to hot reload the logic and not the state, mark the functions you want to be hot
+with the hot_fn macro, but if you use the macro on one function that returns a message, you must use
+it on all functions that return a message.
 
 ```rust
 impl State {
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn boot() -> (Self, Task<Message>) { /* ... */ }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn update(&mut self, message: Message) -> Task<Message> { /* ... */ }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn view(&self) -> Element<'_, Message> { /* ... */ }
 
-    #[hot_ice::hot_fn]
+    #[hot_ice::hot_fn(feature = "reload")]
     pub fn subscription(&self) -> Subscription<Message> { /* ... */ }
 
-    // Non-message functions don't need the macro
+    // Non-message functions don't need the macro(but woun't be hot without it)
     pub fn theme(&self) -> Option<Theme> { /* ... */ }
 }
 ```
@@ -172,10 +192,11 @@ impl State {
 
 ### 2. Full Hot State
 
-Hot reload everything including state structure changes:
+Hot reload everything including state structure changes. when using the `hot_state` argument
+with the hot_fn macro, every method that is called from the application builder must use #[hot_fn(hot_state)].
 
 ```rust
-#[hot_ice::hot_state]  // Enables state serialization
+#[hot_ice::hot_state(feature = "reload")]  // Enables state serialization
 #[derive(Debug, Clone)]
 pub struct State {
     value: i32,
@@ -183,17 +204,17 @@ pub struct State {
 }
 
 impl State {
-    #[hot_ice::hot_fn(hot_state)]
+    #[hot_ice::hot_fn(hot_state, feature = "reload")]
     pub fn boot() -> (Self, Task<Message>) { /* ... */ }
 
-    #[hot_ice::hot_fn(hot_state)]
+    #[hot_ice::hot_fn(hot_state, feature = "reload")]
     pub fn update(&mut self, message: Message) -> Task<Message> { /* ... */ }
 
-    #[hot_ice::hot_fn(hot_state)]
+    #[hot_ice::hot_fn(hot_state, feature = "reload")]
     pub fn view(&self) -> Element<'_, Message> { /* ... */ }
 
     // All functions need the macro with hot_state
-    #[hot_ice::hot_fn(hot_state)]
+    #[hot_ice::hot_fn(hot_state, feature = "reload")]
     pub fn theme(&self) -> Option<Theme> { /* ... */ }
 }
 ```
@@ -255,8 +276,7 @@ Transforms functions for hot reloading. Supports these arguments:
 |----------|-------------|
 | *(none)* | Default hot reloading with message conversion |
 | `hot_state` | Use with `#[hot_state]` for state persistence |
-| `not_hot` | Disable hot reloading for this function |
-| `feature = "..."` | Conditional compilation |
+| `feature = "..."` | Conditional compilation — only emit hot-reload wrappers when the feature is enabled |
 
 ### `#[hot_state]`
 
@@ -292,6 +312,9 @@ ReloaderSettings {
     
     // Custom watch directory (None = auto-detect)
     watch_dir: None,
+    
+    // Feature to enable when compiling the cdylib
+    feature: Some("reload".to_string()),
 }
 ```
 
@@ -320,7 +343,7 @@ Run an example:
 
 ```bash
 cd examples/hot_state
-cargo run --release
+cargo run --features reload
 ```
 
 ## How It Works

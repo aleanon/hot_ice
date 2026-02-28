@@ -160,8 +160,8 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
         if let Some(msg_type) = message_type {
             // We have a Task<Message> in the return type - call function directly
             quote! {
-                #vis fn #original_fn_name() -> (hot_ice::macro_use::HotState, hot_ice::iced::Task<hot_ice::macro_use::HotMessage>) {
-                    let (app, task): (Self, hot_ice::iced::Task<#msg_type>) = Self::#inner_fn_ident();
+                #vis fn #original_fn_name() -> (hot_ice::macro_use::HotState, iced::Task<hot_ice::macro_use::HotMessage>) {
+                    let (app, task): (Self, iced::Task<#msg_type>) = Self::#inner_fn_ident();
 
                     (
                         hot_ice::macro_use::HotState::new(app),
@@ -174,12 +174,12 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
         } else {
             // No Task in return type - create empty task
             quote! {
-                #vis fn #original_fn_name() -> (hot_ice::macro_use::HotState, hot_ice::iced::Task<hot_ice::macro_use::HotMessage>) {
+                #vis fn #original_fn_name() -> (hot_ice::macro_use::HotState, iced::Task<hot_ice::macro_use::HotMessage>) {
                     let app = Self::#inner_fn_ident();
 
                     (
                         hot_ice::macro_use::HotState::new(app),
-                        hot_ice::iced::Task::none()
+                        iced::Task::none()
                     )
                 }
 
@@ -189,8 +189,8 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
     } else {
         if let Some(msg_type) = message_type {
             quote! {
-                #vis fn #original_fn_name() -> (Self, hot_ice::iced::Task<hot_ice::macro_use::HotMessage>) {
-                    let (app, task): (Self, hot_ice::iced::Task<#msg_type>) = Self::#inner_fn_ident();
+                #vis fn #original_fn_name() -> (Self, iced::Task<hot_ice::macro_use::HotMessage>) {
+                    let (app, task): (Self, iced::Task<#msg_type>) = Self::#inner_fn_ident();
 
                     (app, task.map(hot_ice::macro_use::DynMessage::into_hot_message))
                 }
@@ -199,10 +199,10 @@ fn boot(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
             }
         } else {
             quote! {
-                #vis fn #original_fn_name() -> (Self, hot_ice::iced::Task<hot_ice::macro_use::HotMessage>) {
+                #vis fn #original_fn_name() -> (Self, iced::Task<hot_ice::macro_use::HotMessage>) {
                     let app = Self::#inner_fn_ident();
 
-                    (app, hot_ice::iced::Task::none())
+                    (app, iced::Task::none())
                 }
 
                 #input
@@ -359,7 +359,7 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
             #vis fn #original_fn_name(
                 state: &mut hot_ice::macro_use::HotState,
                 message: hot_ice::macro_use::HotMessage,
-            ) -> ::core::result::Result<hot_ice::iced::Task<hot_ice::macro_use::HotMessage>, hot_ice::macro_use::HotIceError> {
+            ) -> ::core::result::Result<iced::Task<hot_ice::macro_use::HotMessage>, hot_ice::macro_use::HotIceError> {
                 let message = message
                     .into_message()
                     .map_err(|m| hot_ice::macro_use::HotIceError::MessageDowncastError(::std::format!("{:?}", m)))?;
@@ -385,7 +385,7 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
             #vis fn #original_fn_name(
                 &mut self,
                 message: hot_ice::macro_use::HotMessage,
-            ) -> ::core::result::Result<hot_ice::iced::Task<hot_ice::macro_use::HotMessage>, hot_ice::macro_use::HotIceError> {
+            ) -> ::core::result::Result<iced::Task<hot_ice::macro_use::HotMessage>, hot_ice::macro_use::HotIceError> {
                 let message = message.into_message()
                     .map_err(|message| hot_ice::macro_use::HotIceError::MessageDowncastError(::std::format!("{:?}", message)))?;
 
@@ -502,7 +502,7 @@ fn subscription(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::T
     let expanded = if hot_state {
         quote! {
             #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage>> {
+            #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState) -> hot_ice::macro_use::HotResult<iced::Subscription<hot_ice::macro_use::HotMessage>> {
                 hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                     Self::#inner_fn_ident(state.ref_state())
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
@@ -516,7 +516,7 @@ fn subscription(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::T
     } else {
         quote! {
             #[unsafe(no_mangle)]
-            #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<hot_ice::iced::Subscription<hot_ice::macro_use::HotMessage>> {
+            #vis fn #original_fn_name(&self) -> hot_ice::macro_use::HotResult<iced::Subscription<hot_ice::macro_use::HotMessage>> {
                 hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| {
                     self.#inner_fn_ident()
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
