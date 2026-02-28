@@ -165,8 +165,10 @@ Hot Ice supports two levels of hot reloading, each with different trade-offs:
 
 ### 1. Hot reloading without hot state
 
-If you only want to hot reload the logic and not the state, mark the functions you want to be hot
-with the hot_fn macro, but if you use the macro on one function that returns a message, you must use
+If you only want to hot reload the logic and not the state,
+mark the functions you want to be hot
+with the hot_fn macro, but if you use the macro on one function that
+returns a message, you must use
 it on all functions that return a message.
 
 ```rust
@@ -192,8 +194,10 @@ impl State {
 
 ### 2. Full Hot State
 
-Hot reload everything including state structure changes. when using the `hot_state` argument
-with the hot_fn macro, every method that is called from the application builder must use #[hot_fn(hot_state)].
+Hot reload everything including state structure changes.
+when using the `hot_state` argument
+with the hot_fn macro, every method that is called from the application builder
+must use #[hot_fn(hot_state)].
 
 ```rust
 #[hot_ice::hot_state(feature = "reload")]  // Enables state serialization
