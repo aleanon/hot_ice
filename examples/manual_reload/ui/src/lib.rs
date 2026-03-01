@@ -1,5 +1,5 @@
-use hot_ice::iced::widget::{column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task, Theme, theme};
+use iced::widget::{column, container, row, text};
+use iced::{Element, Length, Subscription, Task, Theme, theme};
 use serde::{Deserialize, Serialize};
 
 pub mod counter;

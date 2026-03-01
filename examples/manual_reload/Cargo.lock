@@ -266,6 +266,7 @@ name = "bin"
 version = "0.1.0"
 dependencies = [
  "hot_ice",
+ "iced",
  "tracing",
  "tracing-error",
  "tracing-subscriber",
@@ -3228,6 +3229,7 @@ name = "ui"
 version = "0.1.0"
 dependencies = [
  "hot_ice",
+ "iced",
  "serde",
 ]
 

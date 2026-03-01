@@ -1,5 +1,5 @@
-use hot_ice::iced::widget::{button, checkbox, column, container, row, text, text_input};
-use hot_ice::iced::{Element, Length, Subscription, Task, window};
+use iced::widget::{button, checkbox, column, container, row, text, text_input};
+use iced::{Element, Length, Subscription, Task, window};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -94,7 +94,7 @@ impl State {
                     .padding(5),
             ]
             .spacing(10)
-            .align_y(hot_ice::iced::Alignment::Center);
+            .align_y(iced::Alignment::Center);
 
             todo_column = todo_column.push(todo_row);
         }

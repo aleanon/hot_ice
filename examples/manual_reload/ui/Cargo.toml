@@ -7,5 +7,6 @@ edition.workspace = true
 reload = []
 
 [dependencies]
-hot_ice.workspace = true
+iced.workspace = true
+hot_ice = { path = "../../.." }
 serde.workspace = true

@@ -1,5 +1,5 @@
-use hot_ice::iced::widget::{button, column, container, row, text};
-use hot_ice::iced::{Element, Length, Subscription, Task};
+use iced::widget::{button, column, container, row, text};
+use iced::{Element, Length, Subscription, Task};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -67,7 +67,7 @@ impl State {
             .size(14),
         ]
         .spacing(20)
-        .align_x(hot_ice::iced::Alignment::Center);
+        .align_x(iced::Alignment::Center);
 
         container(content).center(Length::Fill).padding(20).into()
     }

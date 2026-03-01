@@ -5,16 +5,10 @@ use ui::State;
 #[cfg(feature = "reload")]
 use hot_ice::application;
 #[cfg(not(feature = "reload"))]
-use hot_ice::iced::application;
+use iced::application;
 
 fn main() {
     init_tracing();
-
-    #[cfg(feature = "reload")]
-    let reloader_settings = hot_ice::ReloaderSettings {
-        compile_in_reloader: false,
-        ..Default::default()
-    };
 
     let app = application(State::new, State::update, State::view)
         .subscription(State::subscription)
@@ -27,7 +21,14 @@ fn main() {
     app.run().unwrap();
 
     #[cfg(feature = "reload")]
-    app.reloader_settings(reloader_settings).run().unwrap();
+    {
+        let reloader_settings = hot_ice::ReloaderSettings {
+            compile_in_reloader: false,
+            ..Default::default()
+        };
+
+        app.reloader_settings(reloader_settings).run().unwrap();
+    }
 }
 
 pub fn init_tracing() {
