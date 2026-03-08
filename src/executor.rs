@@ -91,7 +91,7 @@ pub mod ffi {
 // Type-erased worker protocol
 // ---------------------------------------------------------------------------
 
-use futures::channel::mpsc as fmpsc;
+use futures::channel::{mpsc as fmpsc, oneshot};
 use futures::stream::BoxStream;
 use iced_runtime::Action;
 
@@ -110,6 +110,18 @@ pub type PanicCallbackFn = unsafe fn(ctx: *mut (), msg_ptr: *const u8, msg_len: 
 pub enum ErasedWorkerCommand {
     /// Poll this type-erased stream to completion.
     RunStream(ErasedStream),
+    /// Call this factory inside the worker's executor context, then poll the
+    /// resulting stream until it ends or `cancel` fires.
+    ///
+    /// Used by `WorkerRecipe` to defer `Recipe::stream()` to the cdylib's
+    /// thread, where the correct tokio (or other async runtime) TLS handle
+    /// is available. The `cancel` receiver resolves when the host binary drops
+    /// the corresponding `CancelOnDropStream` (i.e. iced removes the
+    /// subscription), stopping the worker recipe promptly.
+    RunRecipeFactory {
+        factory: Box<dyn FnOnce() -> ErasedStream + Send + 'static>,
+        cancel: oneshot::Receiver<()>,
+    },
     /// Shut down the worker thread immediately.
     Shutdown,
     /// Drain active streams with a timeout, then exit.
@@ -187,6 +199,7 @@ async fn erased_worker_loop_async(
                     cmd = command_rx.select_next_some() => {
                         match cmd {
                             ErasedWorkerCommand::RunStream(stream) => {
+                                log::debug!("[worker] Received RunStream command");
                                 let cb_ctx = ctx;
                                 let action_cb = action_callback;
                                 let panic_cb = panic_callback;
@@ -200,6 +213,44 @@ async fn erased_worker_loop_async(
                                         handle_stream_result(result, cb_ctx, panic_cb);
                                     }),
                                 ));
+                            }
+                            ErasedWorkerCommand::RunRecipeFactory { factory, cancel } => {
+                                log::debug!("[worker] Received RunRecipeFactory command");
+                                let cb_ctx = ctx;
+                                let action_cb = action_callback;
+                                let panic_cb = panic_callback;
+
+                                // Call the factory here, inside the cdylib's executor
+                                // context. If it panics (e.g. tokio timer creation
+                                // fails), catch and report rather than crashing the
+                                // worker.
+                                match std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(factory),
+                                ) {
+                                    Ok(stream) => {
+                                        active.push(Box::pin(
+                                            AssertUnwindSafe(erased_drain_stream_cancelable(
+                                                stream, cancel, cb_ctx, action_cb,
+                                            ))
+                                            .catch_unwind()
+                                            .map(move |result| {
+                                                handle_stream_result(result, cb_ctx, panic_cb);
+                                            }),
+                                        ));
+                                    }
+                                    Err(panic) => {
+                                        let msg = extract_panic_message(&panic);
+                                        let bytes = msg.as_bytes();
+                                        unsafe {
+                                            panic_cb(
+                                                cb_ctx.as_ptr(),
+                                                bytes.as_ptr(),
+                                                bytes.len(),
+                                            );
+                                        }
+                                        std::mem::forget(panic);
+                                    }
+                                }
                             }
                             ErasedWorkerCommand::Shutdown => {
                                 break;
@@ -252,10 +303,50 @@ async fn erased_drain_stream(
     action_callback: ActionCallbackFn,
 ) {
     use futures::StreamExt;
+    log::debug!("[worker] erased_drain_stream: starting to poll stream");
     futures::pin_mut!(stream);
+    let mut count = 0u64;
     while let Some(action_ptr) = stream.next().await {
+        count += 1;
+        log::debug!("[worker] erased_drain_stream: got item #{}", count);
         unsafe {
             action_callback(callback_ctx.0, action_ptr);
+        }
+        log::debug!(
+            "[worker] erased_drain_stream: action_callback returned for item #{}",
+            count
+        );
+    }
+    log::debug!(
+        "[worker] erased_drain_stream: stream ended after {} items",
+        count
+    );
+}
+
+/// Like `erased_drain_stream` but stops early when `cancel` resolves.
+///
+/// `cancel` resolves when the host binary drops the `CancelOnDropStream`
+/// returned from `WorkerRecipe::stream()`, i.e. when iced removes the
+/// subscription (hash changed or subscription no longer returned).
+async fn erased_drain_stream_cancelable(
+    stream: ErasedStream,
+    cancel: oneshot::Receiver<()>,
+    callback_ctx: SendPtr,
+    action_callback: ActionCallbackFn,
+) {
+    use futures::{FutureExt, StreamExt};
+    let mut stream = stream.fuse();
+    let mut cancel = cancel.fuse();
+    loop {
+        futures::select! {
+            _ = cancel => {
+                log::debug!("[worker] erased_drain_stream_cancelable: cancelled");
+                break;
+            }
+            item = stream.select_next_some() => {
+                unsafe { action_callback(callback_ctx.0, item); }
+            }
+            complete => break,
         }
     }
 }
@@ -337,7 +428,9 @@ struct CallbackContext<M: Send + 'static> {
 unsafe fn action_callback_impl<M: Send + 'static>(ctx: *mut (), action_ptr: *mut ()) {
     let cb_ctx = unsafe { &*(ctx as *const CallbackContext<M>) };
     let action = unsafe { *Box::from_raw(action_ptr as *mut Action<M>) };
+    log::debug!("[worker] action_callback_impl: delivering action via proxy");
     cb_ctx.proxy.send_action(action);
+    log::debug!("[worker] action_callback_impl: proxy.send_action returned");
 }
 
 /// Receives a panic message from the cdylib and logs it.
@@ -442,6 +535,23 @@ impl<M: Send + 'static> CdylibWorker<M> {
             callback_ctx_ptr,
             _marker: std::marker::PhantomData,
         })
+    }
+
+    /// Submits a recipe factory for the worker to call in the cdylib's
+    /// executor context.
+    ///
+    /// The factory is invoked by the worker thread (inside `Executor::enter()`),
+    /// ensuring that any async runtime TLS — such as tokio's runtime handle —
+    /// is available when `Recipe::stream()` is called. The resulting stream is
+    /// then polled to completion in the same context.
+    pub fn run_recipe_factory(
+        &self,
+        factory: Box<dyn FnOnce() -> ErasedStream + Send + 'static>,
+        cancel: oneshot::Receiver<()>,
+    ) {
+        let _ = self
+            .command_tx
+            .unbounded_send(ErasedWorkerCommand::RunRecipeFactory { factory, cancel });
     }
 
     /// Submits a stream for the worker to poll to completion.

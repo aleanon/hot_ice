@@ -1195,10 +1195,17 @@ where
         }
     }
 
+    log::debug!("[sub] about to call program.subscription()");
     let subscription = program.subscription();
+    log::debug!("[sub] subscription() returned, converting to recipes");
     let recipes = subscription::into_recipes(subscription.map(Action::Output));
+    log::debug!(
+        "[sub] calling runtime.track() with {} recipes",
+        recipes.len()
+    );
 
     runtime.track(recipes);
+    log::debug!("[sub] runtime.track() completed");
 
     actions
 }

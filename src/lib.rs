@@ -27,3 +27,5 @@ pub mod macro_use {
     pub use iced_futures;
     pub use iced_graphics::text::font_system;
 }
+
+pub use iced;
