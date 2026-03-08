@@ -356,15 +356,38 @@ struct ErrorEntry {
 /// changes to take effect immediately on hot reload.
 struct CancelGuardStream<T> {
     _cancel_tx: futures::channel::oneshot::Sender<()>,
+    event_input: std::pin::Pin<Box<dyn Stream<Item = iced_subscription::Event> + Send>>,
+    event_bridge_tx: futures::channel::mpsc::Sender<iced_subscription::Event>,
     _phantom: std::marker::PhantomData<T>,
 }
+
+// CancelGuardStream never holds a T value (only PhantomData<T>), so it is
+// safe to unpin. The inner Pin<Box<dyn Stream>> manages its own pinning.
+impl<T> Unpin for CancelGuardStream<T> {}
 
 impl<T> Stream for CancelGuardStream<T> {
     type Item = T;
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
+        cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<T>> {
+        let this = self.get_mut();
+
+        // Forward events from the tracker's event channel to the bridge channel.
+        // The tracker polls this stream continuously, so we drain all available
+        // events each time and forward them to the worker thread's recipe.
+        loop {
+            match this.event_input.as_mut().poll_next(cx) {
+                std::task::Poll::Ready(Some(event)) => {
+                    // Best-effort forward; silently drop if bridge is full
+                    let _ = this.event_bridge_tx.try_send(event);
+                }
+                std::task::Poll::Ready(None) => break,
+                std::task::Poll::Pending => break,
+            }
+        }
+
+        // Never yield items — exist only as cancellation guard + event forwarder
         std::task::Poll::Pending
     }
 }
@@ -398,30 +421,12 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
         let inner = self.inner;
         let worker = self.worker;
 
-        // Drop the incoming event stream before this function returns.
-        //
-        // The iced subscription tracker checks `event_sender.is_closed()`
-        // immediately after `stream()` returns (tracker.rs:115). If the
-        // receiver is still alive at that point the tracker stores the sender
-        // and broadcasts every UI event (mouse, keyboard, …) to it. Later,
-        // when the inner recipe drops the stream in the worker (e.g.
-        // `iced::time::every` ignores it), the channel disconnects and every
-        // subsequent `broadcast()` produces a `TrySendError { kind:
-        // Disconnected }` warning.
-        //
-        // Dropping here signals "no events wanted" → tracker sets
-        // `listener = None` → no broadcasts, no warnings.
-        //
-        // Subscriptions that genuinely need iced UI events (keyboard, mouse)
-        // would require explicit event-forwarding from the host thread to the
-        // worker; that is not implemented yet, so they remain a known
-        // limitation of cdylib subscriptions.
-        drop(input);
-
-        // Supply the worker recipe with a never-ending empty event stream so
-        // it can call `inner.stream()` without panicking. Timer/IO recipes
-        // ignore this argument entirely.
-        let worker_input: EventStream = futures::stream::pending::<Event>().boxed();
+        // Create a bridge channel to forward events from the main thread
+        // (where the tracker broadcasts) to the worker thread (where the
+        // inner recipe consumes them). The CancelGuardStream polls the
+        // tracker's event_receiver and forwards events through this bridge.
+        let (bridge_tx, bridge_rx) = futures::channel::mpsc::channel::<Event>(100);
+        let worker_input: EventStream = bridge_rx.boxed();
 
         // Wrap the recipe in a Send-asserting newtype.
         //
@@ -469,11 +474,14 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
 
         worker.run_recipe_factory(factory, cancel_rx);
 
-        // Return a stream that holds `cancel_tx`. When iced drops this stream
-        // (subscription removed / hash changed), `cancel_tx` is dropped which
-        // signals the worker to stop the recipe.
+        // Return a stream that:
+        // 1. Holds cancel_tx — dropping it cancels the worker recipe
+        // 2. Forwards events from `input` to bridge_tx when polled
+        // 3. Never yields items itself
         Box::pin(CancelGuardStream {
             _cancel_tx: cancel_tx,
+            event_input: Box::pin(input),
+            event_bridge_tx: bridge_tx,
             _phantom: std::marker::PhantomData::<M>,
         })
     }

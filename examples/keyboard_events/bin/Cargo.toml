@@ -1,0 +1,18 @@
+[package]
+name = "bin"
+version.workspace = true
+edition.workspace = true
+
+[features]
+reload = ["hot_ice", "ui/reload"]
+
+[dependencies]
+hot_ice = { path = "../../..", optional = true, features = ["smol"] }
+iced.workspace = true
+ui.workspace = true
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = [
+    "env-filter",
+    "registry",
+] }
+tracing-error = "0.2.1"
