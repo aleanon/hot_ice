@@ -370,7 +370,7 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
                 }) {
                     ::core::result::Result::Ok(task) => ::core::result::Result::Ok(task),
                     ::core::result::Result::Err(err_msg) => {
-                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg))
                     }
                 }
             }
@@ -395,7 +395,7 @@ fn update(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenSt
                 }) {
                     ::core::result::Result::Ok(task) => ::core::result::Result::Ok(task),
                     ::core::result::Result::Err(err_msg) => {
-                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg))
                     }
                 }
             }
@@ -455,7 +455,7 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
                 }) {
                     ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
                     ::core::result::Result::Err(err_msg) => {
-                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg))
                     }
                 })
             }
@@ -474,7 +474,7 @@ fn view(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::TokenStre
                 }) {
                     ::core::result::Result::Ok(element) => ::core::result::Result::Ok(element),
                     ::core::result::Result::Err(err_msg) => {
-                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg))
+                        ::core::result::Result::Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg))
                     }
                 })
             }
@@ -508,7 +508,7 @@ fn subscription(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::T
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
                 }) {
                     Ok(subscription) => Ok(subscription),
-                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg)),
                 })
             }
             #input
@@ -522,7 +522,7 @@ fn subscription(hot_state: bool, item: proc_macro::TokenStream) -> proc_macro::T
                         .map(hot_ice::macro_use::DynMessage::into_hot_message)
                 }) {
                     Ok(subscription) => Ok(subscription),
-                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg)),
                 })
             }
             #input
@@ -601,7 +601,7 @@ fn generate_simple_wrapper(
             #vis fn #original_fn_name(state: &hot_ice::macro_use::HotState, #(#args_no_receiver),*) -> hot_ice::macro_use::HotResult<#return_type> {
                 hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| Self::#inner_fn_ident(state.ref_state(), #(#arg_names),*)) {
                     Ok(result) => Ok(result),
-                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg)),
                 })
             }
             #input
@@ -613,7 +613,7 @@ fn generate_simple_wrapper(
             #vis fn #original_fn_name(#original_inputs) -> hot_ice::macro_use::HotResult<#return_type> {
                 hot_ice::macro_use::HotResult(match hot_ice::macro_use::catch_panic(|| self.#inner_fn_ident(#(#arg_names),*)) {
                     Ok(result) => Ok(result),
-                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPaniced(err_msg)),
+                    Err(err_msg) => Err(hot_ice::macro_use::HotIceError::FunctionPanicked(err_msg)),
                 })
             }
             #input

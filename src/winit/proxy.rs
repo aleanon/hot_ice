@@ -83,10 +83,15 @@ impl<T: 'static> Proxy<T> {
         self.send_action(Action::Output(value));
     }
 
-    /// Sends an action to the event loop.
+    /// Sends an action to the event loop, bypassing backpressure.
     ///
-    /// Note: This skips the backpressure mechanism with an unbounded
-    /// channel. Use sparingly!
+    /// This intentionally skips the bounded `sender` channel and writes
+    /// directly to the winit `EventLoopProxy`. The bypass is necessary
+    /// because this method is called from the cdylib worker thread's
+    /// `action_callback_impl`, which runs synchronously inside the
+    /// worker polling loop — blocking on a bounded channel could deadlock
+    /// the worker. The winit event loop drains quickly, so unbounded
+    /// sending here does not cause meaningful backpressure issues.
     pub fn send_action(&self, action: Action<T>) {
         let _ = self.raw.send_event(action);
     }

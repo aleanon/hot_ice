@@ -345,20 +345,21 @@ struct ErrorEntry {
     dismissing: bool,
 }
 
-/// Returned by `WorkerRecipe::stream()` instead of the real subscription stream.
+/// Cancellation guard returned by `WorkerRecipe::stream()`.
 ///
-/// Holds a `oneshot::Sender<()>`. When iced removes the subscription (the
-/// tracked recipe hash changes or the subscription is no longer returned),
-/// it drops this stream, which drops the sender. The worker's
-/// `erased_drain_stream_cancelable` holds the paired receiver and stops the
-/// recipe as soon as the sender is dropped — allowing frequency changes to
-/// take effect immediately on hot reload.
-struct CancelOnDropStream<T> {
+/// This stream never yields items — it exists solely as a lifetime guard.
+/// It holds a `oneshot::Sender<()>`. When iced removes the subscription
+/// (the tracked recipe hash changes or the subscription is no longer
+/// returned), it drops this stream, which drops the sender. The worker's
+/// `erased_drain_stream_cancelable` holds the paired receiver and stops
+/// the recipe as soon as the sender is dropped — allowing frequency
+/// changes to take effect immediately on hot reload.
+struct CancelGuardStream<T> {
     _cancel_tx: futures::channel::oneshot::Sender<()>,
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> Stream for CancelOnDropStream<T> {
+impl<T> Stream for CancelGuardStream<T> {
     type Item = T;
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -373,7 +374,7 @@ impl<T> Stream for CancelOnDropStream<T> {
 /// When the tracker calls `stream()`, this recipe:
 /// 1. Gets the inner recipe's stream
 /// 2. Maps items to `Action::Output` and sends to the worker
-/// 3. Returns `CancelOnDropStream` to keep the tracker slot alive and
+/// 3. Returns `CancelGuardStream` to keep the tracker slot alive and
 ///    cancel the worker recipe when the subscription is removed
 ///
 /// Messages flow back to the event loop via `Proxy::send_action()` in the worker.
@@ -434,7 +435,11 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
         // explicitly `!Send` types (e.g. `Rc`) would get UB here — but such
         // subscriptions are incompatible with async executors in general.
         struct SendableRecipe<M>(Box<dyn Recipe<Output = M>>);
-        // SAFETY: see comment above.
+        // SAFETY: The SendableRecipe is moved (not shared) to a single worker
+        // thread. `into_stream()` is called on that thread, consuming self.
+        // The recipe is never accessed from multiple threads simultaneously.
+        // Concrete cdylib recipes (e.g. iced::time::every) are simple stream
+        // factories with no !Send state.
         unsafe impl<M> Send for SendableRecipe<M> {}
 
         impl<M> SendableRecipe<M> {
@@ -450,7 +455,7 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
 
         let inner = SendableRecipe(inner);
 
-        // Cancellation channel: when the returned `CancelOnDropStream` is
+        // Cancellation channel: when the returned `CancelGuardStream` is
         // dropped (iced removes this subscription), `cancel_tx` drops and
         // `cancel_rx` resolves, stopping the worker recipe.
         let (cancel_tx, cancel_rx) = futures::channel::oneshot::channel::<()>();
@@ -467,7 +472,7 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
         // Return a stream that holds `cancel_tx`. When iced drops this stream
         // (subscription removed / hash changed), `cancel_tx` is dropped which
         // signals the worker to stop the recipe.
-        Box::pin(CancelOnDropStream {
+        Box::pin(CancelGuardStream {
             _cancel_tx: cancel_tx,
             _phantom: std::marker::PhantomData::<M>,
         })
@@ -691,7 +696,7 @@ where
                 self.serialize_state()
                     .inspect_err(|e| log::error!("{}", e))
                     .ok();
-                log::info!("[reload] State serialized");
+                log::debug!("[reload] State serialized");
 
                 // Begin draining the old worker instead of hard shutdown.
                 // The worker stops accepting new streams and polls active ones
@@ -699,33 +704,34 @@ where
                 // happens later in a background cleanup thread spawned from
                 // ReloadComplete.
                 if let Some(worker_arc) = self.worker.take() {
-                    log::info!(
+                    log::debug!(
                         "[reload] Beginning drain of cdylib worker (arc strong count: {})",
                         Arc::strong_count(&worker_arc)
                     );
                     match Arc::try_unwrap(worker_arc) {
                         Ok(worker) => {
-                            log::info!("[reload] Arc::try_unwrap succeeded, calling begin_drain");
+                            log::debug!("[reload] Arc::try_unwrap succeeded, calling begin_drain");
                             let drain_handle =
                                 worker.begin_drain(self.reloader_settings.drain_timeout);
                             self.pending_drain = Some(drain_handle);
-                            log::info!("[reload] begin_drain returned");
+                            log::debug!("[reload] begin_drain returned");
                         }
-                        Err(_arc) => {
+                        Err(arc) => {
                             log::warn!(
-                                "[reload] Worker had outstanding references during shutdown, \
-                                 dropping without drain"
+                                "[reload] Worker had {} outstanding references during shutdown, \
+                                 dropping without drain (potential resource leak)",
+                                Arc::strong_count(&arc),
                             );
                         }
                     }
                 }
 
-                log::info!("[reload] About to send ReadyToReload on update_channel");
+                log::debug!("[reload] About to send ReadyToReload on update_channel");
                 self.update_channel
                     .0
                     .send(ReadyToReload)
                     .expect("Update Channel closed");
-                log::info!("[reload] ReadyToReload sent");
+                log::debug!("[reload] ReadyToReload sent");
                 Task::none()
             }
             Message::ReloadComplete(retired_wrapper) => {
@@ -1078,7 +1084,7 @@ where
     }
 
     pub fn subscription(&self, program: &P) -> Subscription<Message<P>> {
-        log::debug!(
+        log::trace!(
             "[sub] subscription() called, state={:?}",
             self.reloader_state
         );

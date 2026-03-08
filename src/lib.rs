@@ -1,5 +1,3 @@
-#![feature(downcast_unchecked)]
-
 #[cfg(target_os = "macos")]
 mod codesign;
 mod error;
@@ -28,4 +26,8 @@ pub mod macro_use {
     pub use iced_graphics::text::font_system;
 }
 
+/// Re-export iced so downstream cdylib crates can use `hot_ice::iced` to
+/// ensure they link against the exact same iced version as the host binary.
+/// This prevents subtle ABI mismatches when the cdylib and host use
+/// different iced versions.
 pub use iced;

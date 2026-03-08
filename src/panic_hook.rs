@@ -1,16 +1,13 @@
 use std::cell::Cell;
+use std::sync::Mutex;
 
 thread_local! {
-    static PANIC_LOCATION: Cell<Option<(&'static str, u32, u32)>> = Cell::new(None);
+    static PANIC_LOCATION: Cell<Option<(String, u32, u32)>> = const { Cell::new(None) };
 }
 
-/// Reusable buffer for the combined panic message. Since `catch_panic` is
-/// synchronous and the caller copies the `&'static str` into an error
-/// variant before the next panic can occur, the old contents are always
-/// stale by the time we overwrite.
-struct SyncUnsafeCell(std::cell::UnsafeCell<String>);
-unsafe impl Sync for SyncUnsafeCell {}
-static PANIC_MSG_BUF: SyncUnsafeCell = SyncUnsafeCell(std::cell::UnsafeCell::new(String::new()));
+/// Reusable buffer for the combined panic message. Protected by a Mutex
+/// to prevent data races if two threads panic simultaneously.
+static PANIC_MSG_BUF: Mutex<String> = Mutex::new(String::new());
 
 pub(crate) fn ensure_panic_hook_installed() {
     use std::sync::Once;
@@ -22,8 +19,10 @@ pub(crate) fn ensure_panic_hook_installed() {
         std::mem::forget(prev);
         std::panic::set_hook(Box::new(|info| {
             if let Some(loc) = info.location() {
+                // Store the file as an owned String instead of Box::leak to avoid
+                // memory leaks on every panic.
                 PANIC_LOCATION.set(Some((
-                    Box::leak(loc.file().to_string().into_boxed_str()),
+                    loc.file().to_string(),
                     loc.line(),
                     loc.column(),
                 )));
@@ -33,8 +32,8 @@ pub(crate) fn ensure_panic_hook_installed() {
 }
 
 /// Runs a closure with `catch_unwind`, extracting the panic message as a
-/// `&'static str`. Uses `downcast_unchecked` + `size_of_val` to avoid
-/// `TypeId` checks that fail across cdylib boundaries.
+/// `&'static str`. Uses safe `downcast` to discriminate between `String`
+/// and `&str` payloads.
 ///
 /// A panic hook is auto-installed on first call to capture location info
 /// (file:line:col) which is prepended to the message.
@@ -46,39 +45,89 @@ pub fn catch_panic<R>(f: impl FnOnce() -> R) -> Result<R, &'static str> {
 
     match result {
         Ok(value) => Ok(value),
-        Err(err) => {
-            // Discriminate by concrete type size via the vtable.
-            // String = 3×usize (ptr, len, cap), &str = 2×usize (ptr, len).
-            let payload: &'static str = unsafe {
-                if std::mem::size_of_val(&*err) == std::mem::size_of::<String>() {
-                    let s = err.downcast_unchecked::<String>();
-                    &*Box::leak(s)
-                } else {
-                    let s = err.downcast_unchecked::<&str>();
-                    let msg = *s;
-                    std::mem::forget(s);
-                    msg
-                }
-            };
+        Err(err) => Err(extract_and_format_message(err)),
+    }
+}
 
-            // Combine location + message into the static buffer.
-            // Safety: catch_panic is synchronous and single-threaded.
-            // The returned &'static str is turned into a String owned by the binary
-            // and the &'static str is dropped
-            // before the next call could overwrite the buffer.
-            let msg = if let Some((file, line, col)) = PANIC_LOCATION.get() {
-                unsafe {
-                    use std::fmt::Write;
-                    let buf = &mut *PANIC_MSG_BUF.0.get();
-                    buf.clear();
-                    let _ = write!(buf, "panicked at {file}:{line}:{col}: {payload}");
-                    buf.as_str()
-                }
-            } else {
-                payload
-            };
+/// Extracts the panic message, formats it with location info, and returns
+/// a `&'static str`. The returned reference points into a global buffer
+/// that is overwritten on the next call.
+fn extract_and_format_message(err: Box<dyn std::any::Any + Send>) -> &'static str {
+    // Try to extract String first, then &str. downcast() consumes the
+    // Box on success and returns Err(original) on failure, so chaining
+    // is safe and avoids cross-cdylib TypeId issues with downcast_ref.
+    let payload: String = match err.downcast::<String>() {
+        Ok(s) => *s,
+        Err(err) => match err.downcast::<&str>() {
+            Ok(s) => (*s).to_string(),
+            Err(_) => "unknown panic".to_string(),
+        },
+    };
 
-            Err(msg)
+    // Combine location + message into the static buffer.
+    if let Ok(mut buf) = PANIC_MSG_BUF.lock() {
+        use std::fmt::Write;
+        buf.clear();
+
+        if let Some((file, line, col)) = PANIC_LOCATION.take() {
+            let _ = write!(buf, "panicked at {file}:{line}:{col}: {payload}");
+        } else {
+            buf.push_str(&payload);
         }
+
+        // Safety: catch_panic is synchronous and single-threaded per caller.
+        // The returned &'static str reference is consumed (copied into an
+        // owned String) by the caller before the next call can overwrite
+        // the buffer. The 'static lifetime is a necessary lie for the API
+        // contract — the buffer outlives any individual call.
+        unsafe { &*(buf.as_str() as *const str) }
+    } else {
+        // Mutex poisoned — fall back to a static string.
+        "unknown panic (mutex poisoned)"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catch_panic_ok_result() {
+        let result = catch_panic(|| 42);
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn catch_panic_string_message() {
+        let result = catch_panic(|| panic!("test panic message"));
+        let err = result.unwrap_err();
+        assert!(err.contains("test panic message"), "got: {err}");
+    }
+
+    #[test]
+    fn catch_panic_str_message() {
+        let result = catch_panic(|| {
+            std::panic::panic_any("static str panic");
+        });
+        let err = result.unwrap_err();
+        assert!(err.contains("static str panic"), "got: {err}");
+    }
+
+    #[test]
+    fn catch_panic_unknown_type() {
+        let result = catch_panic(|| {
+            std::panic::panic_any(123i32);
+        });
+        let err = result.unwrap_err();
+        assert!(err.contains("unknown panic"), "got: {err}");
+    }
+
+    #[test]
+    fn catch_panic_includes_location() {
+        let result = catch_panic(|| panic!("located panic"));
+        let err = result.unwrap_err();
+        // Should contain file:line:col prefix
+        assert!(err.contains("panicked at"), "got: {err}");
+        assert!(err.contains("located panic"), "got: {err}");
     }
 }

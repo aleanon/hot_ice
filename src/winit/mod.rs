@@ -1,5 +1,16 @@
 //! A windowing shell for Iced, on top of [`winit`].
 //!
+//! # Fork notice
+//!
+//! This module is a modified fork of `iced_winit` (v0.14.x). Changes from
+//! upstream:
+//! - Integration with `hot_ice`'s `Reloader` for hot-reload lifecycle
+//! - Custom `Proxy` with backpressure and cdylib worker support
+//! - Subscription routing through the cdylib worker thread
+//!
+//! To sync upstream changes, diff against `iced_winit` v0.14.x and apply
+//! relevant patches while preserving the hot-reload modifications above.
+//!
 //! ![The native path of the Iced ecosystem](https://github.com/iced-rs/iced/blob/0525d76ff94e828b7b21634fa94a747022001c83/docs/graphs/native.png?raw=true)
 //!
 //! `iced_winit` offers some convenient abstractions on top of [`iced_runtime`]
@@ -1195,17 +1206,17 @@ where
         }
     }
 
-    log::debug!("[sub] about to call program.subscription()");
+    log::trace!("[sub] about to call program.subscription()");
     let subscription = program.subscription();
-    log::debug!("[sub] subscription() returned, converting to recipes");
+    log::trace!("[sub] subscription() returned, converting to recipes");
     let recipes = subscription::into_recipes(subscription.map(Action::Output));
-    log::debug!(
+    log::trace!(
         "[sub] calling runtime.track() with {} recipes",
         recipes.len()
     );
 
     runtime.track(recipes);
-    log::debug!("[sub] runtime.track() completed");
+    log::trace!("[sub] runtime.track() completed");
 
     actions
 }

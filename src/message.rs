@@ -62,10 +62,6 @@ impl HotMessage {
         }
     }
 
-    pub fn clone(&self) -> Self {
-        Self(self.0.clone_boxed())
-    }
-
     pub fn type_id(&self) -> TypeId {
         self.0.type_id()
     }

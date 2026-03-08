@@ -151,53 +151,24 @@ pub trait HotProgram {
     }
 }
 
-/// Decorates a [`Program`] with the given title function.
-pub fn with_title<P: HotProgram>(
-    program: P,
-    f: impl IntoHotTitle<P::State>,
-) -> impl HotProgram<
-    State = P::State,
-    Message = P::Message,
-    Theme = P::Theme,
-    Renderer = P::Renderer,
-    Executor = P::Executor,
-> {
-    let hot_title = HotTitle::new(f);
-
-    struct WithTitle<P, F>
-    where
-        P: HotProgram,
-    {
-        program: P,
-        title: HotTitle<F, P::State>,
-    }
-
-    impl<P, F> HotProgram for WithTitle<P, F>
-    where
-        P: HotProgram,
-        F: IntoHotTitle<P::State>,
-    {
-        type State = P::State;
-        type Message = P::Message;
-        type Theme = P::Theme;
-        type Renderer = P::Renderer;
-        type Executor = P::Executor;
-
-        fn title(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(String, FunctionState), HotIceError> {
-            self.title.title(state, window, reloader)
-        }
+/// Generates the common boilerplate for a `HotProgram` decorator.
+///
+/// Emits the associated types + pass-through methods that every decorator
+/// needs. The caller supplies a trailing block with the overridden method(s).
+macro_rules! delegate_hot_program_common {
+    ($p:ident, $field:ident) => {
+        type State = $p::State;
+        type Message = $p::Message;
+        type Theme = $p::Theme;
+        type Renderer = $p::Renderer;
+        type Executor = $p::Executor;
 
         fn name() -> &'static str {
-            P::name()
+            $p::name()
         }
 
         fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
-            self.program.boot()
+            self.$field.boot()
         }
 
         fn update(
@@ -206,7 +177,7 @@ pub fn with_title<P: HotProgram>(
             message: MessageSource<Self::Message>,
             reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Result<(Task<MessageSource<Self::Message>>, FunctionState), HotIceError> {
-            self.program.update(state, message, reloader)
+            self.$field.update(state, message, reloader)
         }
 
         fn view<'a>(
@@ -225,51 +196,106 @@ pub fn with_title<P: HotProgram>(
             Self::Theme: 'a,
             Self::Renderer: 'a,
         {
-            self.program.view(state, window, reloader)
+            self.$field.view(state, window, reloader)
         }
 
-        fn theme(
+        fn settings(&self) -> Settings {
+            self.$field.settings()
+        }
+
+        fn window(&self) -> Option<window::Settings> {
+            self.$field.window()
+        }
+    };
+}
+
+/// Generates pass-through for the optional methods that a decorator does
+/// NOT override. Call this with a list of method names to delegate.
+macro_rules! delegate_methods {
+    ($p:ident, $field:ident, [$($method:ident),*]) => {
+        $(delegate_methods!(@single $p, $field, $method);)*
+    };
+    (@single $p:ident, $field:ident, title) => {
+        fn title(
             &self,
             state: &Self::State,
             window: window::Id,
             reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Option<Self::Theme>, FunctionState), HotIceError> {
-            self.program.theme(state, window, reloader)
+        ) -> Result<(String, FunctionState), HotIceError> {
+            self.$field.title(state, window, reloader)
         }
-
-        fn settings(&self) -> Settings {
-            self.program.settings()
-        }
-
-        fn window(&self) -> Option<window::Settings> {
-            self.program.window()
-        }
-
+    };
+    (@single $p:ident, $field:ident, subscription) => {
         fn subscription(
             &self,
             state: &Self::State,
             reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Result<(Subscription<MessageSource<Self::Message>>, FunctionState), HotIceError>
         {
-            self.program.subscription(state, reloader)
+            self.$field.subscription(state, reloader)
         }
-
+    };
+    (@single $p:ident, $field:ident, theme) => {
+        fn theme(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Result<(Option<Self::Theme>, FunctionState), HotIceError> {
+            self.$field.theme(state, window, reloader)
+        }
+    };
+    (@single $p:ident, $field:ident, style) => {
         fn style(
             &self,
             state: &Self::State,
             theme: &Self::Theme,
             reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Result<(theme::Style, FunctionState), HotIceError> {
-            self.program.style(state, theme, reloader)
+            self.$field.style(state, theme, reloader)
         }
-
+    };
+    (@single $p:ident, $field:ident, scale_factor) => {
         fn scale_factor(
             &self,
             state: &Self::State,
             window: window::Id,
             reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Result<(f32, FunctionState), HotIceError> {
-            self.program.scale_factor(state, window, reloader)
+            self.$field.scale_factor(state, window, reloader)
+        }
+    };
+}
+
+/// Decorates a [`Program`] with the given title function.
+pub fn with_title<P: HotProgram>(
+    program: P,
+    f: impl IntoHotTitle<P::State>,
+) -> impl HotProgram<
+    State = P::State,
+    Message = P::Message,
+    Theme = P::Theme,
+    Renderer = P::Renderer,
+    Executor = P::Executor,
+> {
+    let hot_title = HotTitle::new(f);
+
+    struct WithTitle<P: HotProgram, F> {
+        program: P,
+        title: HotTitle<F, P::State>,
+    }
+
+    impl<P: HotProgram, F: IntoHotTitle<P::State>> HotProgram for WithTitle<P, F> {
+        delegate_hot_program_common!(P, program);
+        delegate_methods!(P, program, [subscription, theme, style, scale_factor]);
+
+        fn title(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+            reloader: Option<&Arc<Mutex<LibReloader>>>,
+        ) -> Result<(String, FunctionState), HotIceError> {
+            self.title.title(state, window, reloader)
         }
     }
 
@@ -286,23 +312,16 @@ pub fn with_subscription<P: HotProgram>(
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
     let hot_sub = HotSubscription::new(f);
 
-    struct WithSubscription<P, F>
-    where
-        P: HotProgram,
-    {
+    struct WithSubscription<P: HotProgram, F> {
         program: P,
         subscription: HotSubscription<F, P::State, P::Message>,
     }
 
-    impl<P: HotProgram, F> HotProgram for WithSubscription<P, F>
-    where
-        F: IntoHotSubscription<P::State, P::Message>,
+    impl<P: HotProgram, F: IntoHotSubscription<P::State, P::Message>> HotProgram
+        for WithSubscription<P, F>
     {
-        type State = P::State;
-        type Message = P::Message;
-        type Theme = P::Theme;
-        type Renderer = P::Renderer;
-        type Executor = P::Executor;
+        delegate_hot_program_common!(P, program);
+        delegate_methods!(P, program, [title, theme, style, scale_factor]);
 
         fn subscription(
             &self,
@@ -311,86 +330,6 @@ pub fn with_subscription<P: HotProgram>(
         ) -> Result<(Subscription<MessageSource<Self::Message>>, FunctionState), HotIceError>
         {
             self.subscription.subscription(state, reloader)
-        }
-
-        fn name() -> &'static str {
-            P::name()
-        }
-
-        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
-            self.program.boot()
-        }
-
-        fn update(
-            &self,
-            state: &mut Self::State,
-            message: MessageSource<Self::Message>,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Task<MessageSource<Self::Message>>, FunctionState), HotIceError> {
-            self.program.update(state, message, reloader)
-        }
-
-        fn view<'a>(
-            &self,
-            state: &'a Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<
-            (
-                Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>,
-                FunctionState,
-            ),
-            HotIceError,
-        >
-        where
-            Self::Theme: 'a,
-            Self::Renderer: 'a,
-        {
-            self.program.view(state, window, reloader)
-        }
-
-        fn settings(&self) -> Settings {
-            self.program.settings()
-        }
-
-        fn window(&self) -> Option<window::Settings> {
-            self.program.window()
-        }
-
-        fn title(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(String, FunctionState), HotIceError> {
-            self.program.title(state, window, reloader)
-        }
-
-        fn theme(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Option<Self::Theme>, FunctionState), HotIceError> {
-            self.program.theme(state, window, reloader)
-        }
-
-        fn style(
-            &self,
-            state: &Self::State,
-            theme: &Self::Theme,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(theme::Style, FunctionState), HotIceError> {
-            self.program.style(state, theme, reloader)
-        }
-
-        fn scale_factor(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(f32, FunctionState), HotIceError> {
-            self.program.scale_factor(state, window, reloader)
         }
     }
 
@@ -407,23 +346,14 @@ pub fn with_theme<P: HotProgram>(
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
     let hot_theme = HotTheme::new(f);
 
-    struct WithTheme<P, F>
-    where
-        P: HotProgram,
-    {
+    struct WithTheme<P: HotProgram, F> {
         program: P,
         theme: HotTheme<F, P::State, P::Theme>,
     }
 
-    impl<P: HotProgram, F> HotProgram for WithTheme<P, F>
-    where
-        F: IntoHotTheme<P::State, P::Theme>,
-    {
-        type State = P::State;
-        type Message = P::Message;
-        type Theme = P::Theme;
-        type Renderer = P::Renderer;
-        type Executor = P::Executor;
+    impl<P: HotProgram, F: IntoHotTheme<P::State, P::Theme>> HotProgram for WithTheme<P, F> {
+        delegate_hot_program_common!(P, program);
+        delegate_methods!(P, program, [title, subscription, style, scale_factor]);
 
         fn theme(
             &self,
@@ -432,86 +362,6 @@ pub fn with_theme<P: HotProgram>(
             reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Result<(Option<Self::Theme>, FunctionState), HotIceError> {
             self.theme.theme(state, reloader)
-        }
-
-        fn name() -> &'static str {
-            P::name()
-        }
-
-        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
-            self.program.boot()
-        }
-
-        fn title(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(String, FunctionState), HotIceError> {
-            self.program.title(state, window, reloader)
-        }
-
-        fn update(
-            &self,
-            state: &mut Self::State,
-            message: MessageSource<Self::Message>,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Task<MessageSource<Self::Message>>, FunctionState), HotIceError> {
-            self.program.update(state, message, reloader)
-        }
-
-        fn view<'a>(
-            &self,
-            state: &'a Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<
-            (
-                Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>,
-                FunctionState,
-            ),
-            HotIceError,
-        >
-        where
-            Self::Theme: 'a,
-            Self::Renderer: 'a,
-        {
-            self.program.view(state, window, reloader)
-        }
-
-        fn settings(&self) -> Settings {
-            self.program.settings()
-        }
-
-        fn window(&self) -> Option<window::Settings> {
-            self.program.window()
-        }
-
-        fn subscription(
-            &self,
-            state: &Self::State,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Subscription<MessageSource<Self::Message>>, FunctionState), HotIceError>
-        {
-            self.program.subscription(state, reloader)
-        }
-
-        fn style(
-            &self,
-            state: &Self::State,
-            theme: &Self::Theme,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(theme::Style, FunctionState), HotIceError> {
-            self.program.style(state, theme, reloader)
-        }
-
-        fn scale_factor(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(f32, FunctionState), HotIceError> {
-            self.program.scale_factor(state, window, reloader)
         }
     }
 
@@ -528,23 +378,14 @@ pub fn with_style<P: HotProgram>(
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
     let hot_style = HotStyle::new(f);
 
-    struct WithStyle<P, F>
-    where
-        P: HotProgram,
-    {
+    struct WithStyle<P: HotProgram, F> {
         program: P,
         style: HotStyle<F, P::State, P::Theme>,
     }
 
-    impl<P: HotProgram, F> HotProgram for WithStyle<P, F>
-    where
-        F: IntoHotStyle<P::State, P::Theme>,
-    {
-        type State = P::State;
-        type Message = P::Message;
-        type Theme = P::Theme;
-        type Renderer = P::Renderer;
-        type Executor = P::Executor;
+    impl<P: HotProgram, F: IntoHotStyle<P::State, P::Theme>> HotProgram for WithStyle<P, F> {
+        delegate_hot_program_common!(P, program);
+        delegate_methods!(P, program, [title, subscription, theme, scale_factor]);
 
         fn style(
             &self,
@@ -553,86 +394,6 @@ pub fn with_style<P: HotProgram>(
             reloader: Option<&Arc<Mutex<LibReloader>>>,
         ) -> Result<(theme::Style, FunctionState), HotIceError> {
             self.style.style(state, theme, reloader)
-        }
-
-        fn name() -> &'static str {
-            P::name()
-        }
-
-        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
-            self.program.boot()
-        }
-
-        fn title(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(String, FunctionState), HotIceError> {
-            self.program.title(state, window, reloader)
-        }
-
-        fn update(
-            &self,
-            state: &mut Self::State,
-            message: MessageSource<Self::Message>,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Task<MessageSource<Self::Message>>, FunctionState), HotIceError> {
-            self.program.update(state, message, reloader)
-        }
-
-        fn view<'a>(
-            &self,
-            state: &'a Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<
-            (
-                Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>,
-                FunctionState,
-            ),
-            HotIceError,
-        >
-        where
-            Self::Theme: 'a,
-            Self::Renderer: 'a,
-        {
-            self.program.view(state, window, reloader)
-        }
-
-        fn settings(&self) -> Settings {
-            self.program.settings()
-        }
-
-        fn window(&self) -> Option<window::Settings> {
-            self.program.window()
-        }
-
-        fn subscription(
-            &self,
-            state: &Self::State,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Subscription<MessageSource<Self::Message>>, FunctionState), HotIceError>
-        {
-            self.program.subscription(state, reloader)
-        }
-
-        fn theme(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Option<Self::Theme>, FunctionState), HotIceError> {
-            self.program.theme(state, window, reloader)
-        }
-
-        fn scale_factor(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(f32, FunctionState), HotIceError> {
-            self.program.scale_factor(state, window, reloader)
         }
     }
 
@@ -649,103 +410,14 @@ pub fn with_scale_factor<P: HotProgram>(
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
     let hot_scale_factor = HotScaleFactor::new(f);
 
-    struct WithScaleFactor<P, F>
-    where
-        P: HotProgram,
-    {
+    struct WithScaleFactor<P: HotProgram, F> {
         program: P,
         scale_factor: HotScaleFactor<F, P::State>,
     }
 
-    impl<P: HotProgram, F> HotProgram for WithScaleFactor<P, F>
-    where
-        F: IntoHotScaleFactor<P::State>,
-    {
-        type State = P::State;
-        type Message = P::Message;
-        type Theme = P::Theme;
-        type Renderer = P::Renderer;
-        type Executor = P::Executor;
-
-        fn title(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(String, FunctionState), HotIceError> {
-            self.program.title(state, window, reloader)
-        }
-
-        fn name() -> &'static str {
-            P::name()
-        }
-
-        fn boot(&self) -> (Self::State, Task<MessageSource<Self::Message>>) {
-            self.program.boot()
-        }
-
-        fn update(
-            &self,
-            state: &mut Self::State,
-            message: MessageSource<Self::Message>,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Task<MessageSource<Self::Message>>, FunctionState), HotIceError> {
-            self.program.update(state, message, reloader)
-        }
-
-        fn view<'a>(
-            &self,
-            state: &'a Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<
-            (
-                Element<'a, MessageSource<Self::Message>, Self::Theme, Self::Renderer>,
-                FunctionState,
-            ),
-            HotIceError,
-        >
-        where
-            Self::Theme: 'a,
-            Self::Renderer: 'a,
-        {
-            self.program.view(state, window, reloader)
-        }
-
-        fn settings(&self) -> Settings {
-            self.program.settings()
-        }
-
-        fn window(&self) -> Option<window::Settings> {
-            self.program.window()
-        }
-
-        fn subscription(
-            &self,
-            state: &Self::State,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Subscription<MessageSource<Self::Message>>, FunctionState), HotIceError>
-        {
-            self.program.subscription(state, reloader)
-        }
-
-        fn theme(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Option<Self::Theme>, FunctionState), HotIceError> {
-            self.program.theme(state, window, reloader)
-        }
-
-        fn style(
-            &self,
-            state: &Self::State,
-            theme: &Self::Theme,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(theme::Style, FunctionState), HotIceError> {
-            self.program.style(state, theme, reloader)
-        }
+    impl<P: HotProgram, F: IntoHotScaleFactor<P::State>> HotProgram for WithScaleFactor<P, F> {
+        delegate_hot_program_common!(P, program);
+        delegate_methods!(P, program, [title, subscription, theme, style]);
 
         fn scale_factor(
             &self,
@@ -764,6 +436,9 @@ pub fn with_scale_factor<P: HotProgram>(
 }
 
 /// Decorates a [`Program`] with the given executor function.
+///
+/// Note: This decorator cannot use the delegation macros because it
+/// changes the `Executor` associated type.
 pub fn with_executor<P: HotProgram, E: Executor>(
     program: P,
 ) -> impl HotProgram<State = P::State, Message = P::Message, Theme = P::Theme> {
@@ -774,24 +449,12 @@ pub fn with_executor<P: HotProgram, E: Executor>(
         executor: PhantomData<E>,
     }
 
-    impl<P: HotProgram, E> HotProgram for WithExecutor<P, E>
-    where
-        E: Executor,
-    {
+    impl<P: HotProgram, E: Executor> HotProgram for WithExecutor<P, E> {
         type State = P::State;
         type Message = P::Message;
         type Theme = P::Theme;
         type Renderer = P::Renderer;
         type Executor = E;
-
-        fn title(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(String, FunctionState), HotIceError> {
-            self.program.title(state, window, reloader)
-        }
 
         fn name() -> &'static str {
             P::name()
@@ -837,41 +500,7 @@ pub fn with_executor<P: HotProgram, E: Executor>(
             self.program.window()
         }
 
-        fn subscription(
-            &self,
-            state: &Self::State,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Subscription<MessageSource<Self::Message>>, FunctionState), HotIceError>
-        {
-            self.program.subscription(state, reloader)
-        }
-
-        fn theme(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(Option<Self::Theme>, FunctionState), HotIceError> {
-            self.program.theme(state, window, reloader)
-        }
-
-        fn style(
-            &self,
-            state: &Self::State,
-            theme: &Self::Theme,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(theme::Style, FunctionState), HotIceError> {
-            self.program.style(state, theme, reloader)
-        }
-
-        fn scale_factor(
-            &self,
-            state: &Self::State,
-            window: window::Id,
-            reloader: Option<&Arc<Mutex<LibReloader>>>,
-        ) -> Result<(f32, FunctionState), HotIceError> {
-            self.program.scale_factor(state, window, reloader)
-        }
+        delegate_methods!(P, program, [title, subscription, theme, style, scale_factor]);
     }
 
     WithExecutor {

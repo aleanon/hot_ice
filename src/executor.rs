@@ -47,7 +47,8 @@ use crate::winit::Proxy;
 #[derive(Clone, Copy)]
 struct SendPtr(*mut ());
 unsafe impl Send for SendPtr {}
-unsafe impl Sync for SendPtr {}
+// Note: Sync is intentionally NOT implemented for SendPtr.
+// Only Send is needed — the pointer is accessed sequentially on the worker thread.
 
 impl SendPtr {
     fn as_ptr(self) -> *mut () {
@@ -116,7 +117,7 @@ pub enum ErasedWorkerCommand {
     /// Used by `WorkerRecipe` to defer `Recipe::stream()` to the cdylib's
     /// thread, where the correct tokio (or other async runtime) TLS handle
     /// is available. The `cancel` receiver resolves when the host binary drops
-    /// the corresponding `CancelOnDropStream` (i.e. iced removes the
+    /// the corresponding `CancelGuardStream` (i.e. iced removes the
     /// subscription), stopping the worker recipe promptly.
     RunRecipeFactory {
         factory: Box<dyn FnOnce() -> ErasedStream + Send + 'static>,
@@ -270,8 +271,11 @@ async fn erased_worker_loop_async(
 
         if let Err(panic) = result {
             // Outer catch_unwind: keeps the worker alive if the select!
-            // machinery itself panics. Forget the payload to avoid
-            // cross-cdylib drop issues.
+            // machinery itself panics. Log the error before forgetting
+            // the payload to avoid silently swallowing panics.
+            let msg = extract_panic_message(&panic);
+            log::error!("[worker] outer loop caught panic: {}", msg);
+            // Forget the payload to avoid cross-cdylib drop issues.
             std::mem::forget(panic);
         }
     }
@@ -284,14 +288,12 @@ fn handle_stream_result(
     cb_ctx: SendPtr,
     panic_cb: PanicCallbackFn,
 ) {
-    if let Err(ref panic) = result {
-        let msg = extract_panic_message(panic);
+    if let Err(panic) = result {
+        let msg = extract_panic_message(&panic);
         let bytes = msg.as_bytes();
         unsafe {
             panic_cb(cb_ctx.as_ptr(), bytes.as_ptr(), bytes.len());
         }
-    }
-    if let Err(panic) = result {
         std::mem::forget(panic);
     }
 }
@@ -303,21 +305,21 @@ async fn erased_drain_stream(
     action_callback: ActionCallbackFn,
 ) {
     use futures::StreamExt;
-    log::debug!("[worker] erased_drain_stream: starting to poll stream");
+    log::trace!("[worker] erased_drain_stream: starting to poll stream");
     futures::pin_mut!(stream);
     let mut count = 0u64;
     while let Some(action_ptr) = stream.next().await {
         count += 1;
-        log::debug!("[worker] erased_drain_stream: got item #{}", count);
+        log::trace!("[worker] erased_drain_stream: got item #{}", count);
         unsafe {
             action_callback(callback_ctx.0, action_ptr);
         }
-        log::debug!(
+        log::trace!(
             "[worker] erased_drain_stream: action_callback returned for item #{}",
             count
         );
     }
-    log::debug!(
+    log::trace!(
         "[worker] erased_drain_stream: stream ended after {} items",
         count
     );
@@ -325,7 +327,7 @@ async fn erased_drain_stream(
 
 /// Like `erased_drain_stream` but stops early when `cancel` resolves.
 ///
-/// `cancel` resolves when the host binary drops the `CancelOnDropStream`
+/// `cancel` resolves when the host binary drops the `CancelGuardStream`
 /// returned from `WorkerRecipe::stream()`, i.e. when iced removes the
 /// subscription (hash changed or subscription no longer returned).
 async fn erased_drain_stream_cancelable(
@@ -395,18 +397,14 @@ async fn erased_drain_active(
 
 /// Extracts a human-readable message from a panic payload.
 ///
-/// Uses the `size_of_val` trick (same as `catch_panic`) to discriminate
-/// between `String` and `&str` payloads without `TypeId`.
+/// Uses safe `downcast_ref` to discriminate between `String` and `&str`
+/// payloads. This works because panic payloads originate within the same
+/// compilation unit (the cdylib), so `TypeId` matches are reliable.
 fn extract_panic_message(err: &Box<dyn Any + Send>) -> &str {
-    unsafe {
-        if std::mem::size_of_val(&**err) == std::mem::size_of::<String>() {
-            &*(&**err as *const dyn Any as *const String)
-        } else if std::mem::size_of_val(&**err) == std::mem::size_of::<&str>() {
-            *(&**err as *const dyn Any as *const &str)
-        } else {
-            "unknown panic"
-        }
-    }
+    err.downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown panic")
 }
 
 // ---------------------------------------------------------------------------
@@ -428,9 +426,9 @@ struct CallbackContext<M: Send + 'static> {
 unsafe fn action_callback_impl<M: Send + 'static>(ctx: *mut (), action_ptr: *mut ()) {
     let cb_ctx = unsafe { &*(ctx as *const CallbackContext<M>) };
     let action = unsafe { *Box::from_raw(action_ptr as *mut Action<M>) };
-    log::debug!("[worker] action_callback_impl: delivering action via proxy");
+    log::trace!("[worker] action_callback_impl: delivering action via proxy");
     cb_ctx.proxy.send_action(action);
-    log::debug!("[worker] action_callback_impl: proxy.send_action returned");
+    log::trace!("[worker] action_callback_impl: proxy.send_action returned");
 }
 
 /// Receives a panic message from the cdylib and logs it.
@@ -549,9 +547,12 @@ impl<M: Send + 'static> CdylibWorker<M> {
         factory: Box<dyn FnOnce() -> ErasedStream + Send + 'static>,
         cancel: oneshot::Receiver<()>,
     ) {
-        let _ = self
+        if let Err(e) = self
             .command_tx
-            .unbounded_send(ErasedWorkerCommand::RunRecipeFactory { factory, cancel });
+            .unbounded_send(ErasedWorkerCommand::RunRecipeFactory { factory, cancel })
+        {
+            log::warn!("[worker] failed to send RunRecipeFactory: receiver dropped ({})", e);
+        }
     }
 
     /// Submits a stream for the worker to poll to completion.
@@ -778,4 +779,27 @@ macro_rules! export_executor {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_panic_message_from_string() {
+        let payload: Box<dyn Any + Send> = Box::new(String::from("string panic"));
+        assert_eq!(extract_panic_message(&payload), "string panic");
+    }
+
+    #[test]
+    fn extract_panic_message_from_str() {
+        let payload: Box<dyn Any + Send> = Box::new("str panic");
+        assert_eq!(extract_panic_message(&payload), "str panic");
+    }
+
+    #[test]
+    fn extract_panic_message_from_unknown_type() {
+        let payload: Box<dyn Any + Send> = Box::new(42i32);
+        assert_eq!(extract_panic_message(&payload), "unknown panic");
+    }
 }

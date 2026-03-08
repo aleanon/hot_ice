@@ -15,8 +15,8 @@ pub enum HotIceError {
     LibraryNotFound,
     #[error("Could not load function: {0}")]
     FunctionNotFound(&'static str),
-    #[error("Hot function call paniced: {0}")]
-    FunctionPaniced(&'static str),
+    #[error("Hot function call panicked: {0}")]
+    FunctionPanicked(&'static str),
     #[error("Unable to acquire lock on reloader")]
     LockAcquisitionError,
     #[error("Failed to downcast Message: {0}")]
