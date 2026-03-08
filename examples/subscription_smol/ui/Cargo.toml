@@ -1,0 +1,13 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+
+
+[features]
+reload = ["hot_ice", "serde"]
+
+[dependencies]
+serde = {version = "1", optional = true, features = ["derive"]}
+hot_ice = { path = "../../..", optional = true, features = ["smol"] }
+iced.workspace = true

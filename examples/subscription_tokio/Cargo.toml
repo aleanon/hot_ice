@@ -1,0 +1,9 @@
+
+[workspace]
+package.edition = "2024"
+package.version = "0.1.0"
+members = ["bin", "ui"]
+
+[workspace.dependencies]
+ui = { path = "ui" }
+iced = { version = "0.14.0", features = ["tokio"] }
