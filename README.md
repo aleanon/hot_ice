@@ -151,7 +151,7 @@ fn main() {
 
 ```bash
 # With hot reloading
-cargo run --features reload
+cargo run --release --features reload
 
 # Without hot reloading (normal build)
 cargo run
@@ -174,7 +174,7 @@ it on all functions that return a message.
 ```rust
 impl State {
     #[hot_ice::hot_fn(feature = "reload")]
-    pub fn boot() -> (Self, Task<Message>) { /* ... */ }
+    pub fn new() -> (Self, Task<Message>) { /* ... */ }
 
     #[hot_ice::hot_fn(feature = "reload")]
     pub fn update(&mut self, message: Message) -> Task<Message> { /* ... */ }
@@ -209,7 +209,7 @@ pub struct State {
 
 impl State {
     #[hot_ice::hot_fn(hot_state, feature = "reload")]
-    pub fn boot() -> (Self, Task<Message>) { /* ... */ }
+    pub fn new() -> (Self, Task<Message>) { /* ... */ }
 
     #[hot_ice::hot_fn(hot_state, feature = "reload")]
     pub fn update(&mut self, message: Message) -> Task<Message> { /* ... */ }
@@ -374,7 +374,6 @@ The status bar updates to show which functions are successfully hot-reloaded.
 
 - Ensure files are saved
 - Check console for compilation errors
-- Verify `crate-type = ["rlib", "cdylib"]` in your UI crate
 
 ### "Function not found" warnings
 
