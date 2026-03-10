@@ -67,7 +67,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-reload = ["ui/reload"]
+reload = []
 
 [dependencies]
 hot_ice.workspace = true
@@ -201,7 +201,7 @@ must use #[hot_fn(hot_state)].
 
 ```rust
 #[hot_ice::hot_state(feature = "reload")]  // Enables state serialization
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct State {
     value: i32,
     // Add new fields - they'll be initialized to default
