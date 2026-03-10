@@ -345,27 +345,33 @@ struct ErrorEntry {
     dismissing: bool,
 }
 
-/// Cancellation guard returned by `WorkerRecipe::stream()`.
+/// Bridge channel capacity from the main-thread event broadcaster to the
+/// worker. UI events (keyboard, mouse, window) are low-frequency, so a
+/// modest buffer suffices. Events that don't fit are silently discarded.
+const EVENT_BRIDGE_CAPACITY: usize = 100;
+
+/// Guard stream returned by `WorkerRecipe::stream()`.
 ///
-/// This stream never yields items — it exists solely as a lifetime guard.
-/// It holds a `oneshot::Sender<()>`. When iced removes the subscription
-/// (the tracked recipe hash changes or the subscription is no longer
-/// returned), it drops this stream, which drops the sender. The worker's
-/// `erased_drain_stream_cancelable` holds the paired receiver and stops
-/// the recipe as soon as the sender is dropped — allowing frequency
-/// changes to take effect immediately on hot reload.
-struct CancelGuardStream<T> {
+/// This stream never yields items of its own. It serves two purposes:
+/// 1. **Cancellation guard** — holds a `oneshot::Sender<()>`. When iced
+///    removes the subscription, this stream is dropped, which drops the
+///    sender and signals the worker to stop the recipe.
+/// 2. **Event forwarder** — on each poll, drains events from the tracker's
+///    broadcast channel and forwards them through a bridge to the inner
+///    recipe running on the worker thread.
+struct SubscriptionGuardStream<T> {
     _cancel_tx: futures::channel::oneshot::Sender<()>,
-    event_input: std::pin::Pin<Box<dyn Stream<Item = iced_subscription::Event> + Send>>,
+    event_input: iced_subscription::EventStream,
     event_bridge_tx: futures::channel::mpsc::Sender<iced_subscription::Event>,
     _phantom: std::marker::PhantomData<T>,
 }
 
-// CancelGuardStream never holds a T value (only PhantomData<T>), so it is
-// safe to unpin. The inner Pin<Box<dyn Stream>> manages its own pinning.
-impl<T> Unpin for CancelGuardStream<T> {}
+// All fields are either heap-allocated behind Box (EventStream = Pin<Box<...>>)
+// or inherently Unpin (oneshot::Sender, mpsc::Sender, PhantomData). No
+// self-referential borrows exist, so Unpin is sound regardless of T.
+impl<T> Unpin for SubscriptionGuardStream<T> {}
 
-impl<T> Stream for CancelGuardStream<T> {
+impl<T> Stream for SubscriptionGuardStream<T> {
     type Item = T;
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -374,15 +380,23 @@ impl<T> Stream for CancelGuardStream<T> {
         let this = self.get_mut();
 
         // Forward events from the tracker's event channel to the bridge channel.
-        // The tracker polls this stream continuously, so we drain all available
-        // events each time and forward them to the worker thread's recipe.
+        // Always drain the tracker's channel completely to prevent backpressure
+        // from reaching the tracker's broadcast(). Subscriptions that ignore
+        // their EventStream (e.g. time::every) will never consume from the
+        // bridge — in that case we discard events here rather than letting
+        // the tracker's own channel fill up and log warnings.
         loop {
             match this.event_input.as_mut().poll_next(cx) {
                 std::task::Poll::Ready(Some(event)) => {
-                    // Best-effort forward; silently drop if bridge is full
+                    // Best-effort forward; discard if bridge is full
                     let _ = this.event_bridge_tx.try_send(event);
                 }
-                std::task::Poll::Ready(None) => break,
+                std::task::Poll::Ready(None) => {
+                    // Tracker's event broadcast ended (shutdown). Close the
+                    // bridge so the worker recipe's EventStream terminates.
+                    this.event_bridge_tx.close_channel();
+                    break;
+                }
                 std::task::Poll::Pending => break,
             }
         }
@@ -397,7 +411,7 @@ impl<T> Stream for CancelGuardStream<T> {
 /// When the tracker calls `stream()`, this recipe:
 /// 1. Gets the inner recipe's stream
 /// 2. Maps items to `Action::Output` and sends to the worker
-/// 3. Returns `CancelGuardStream` to keep the tracker slot alive and
+/// 3. Returns `SubscriptionGuardStream` to keep the tracker slot alive and
 ///    cancel the worker recipe when the subscription is removed
 ///
 /// Messages flow back to the event loop via `Proxy::send_action()` in the worker.
@@ -423,9 +437,10 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
 
         // Create a bridge channel to forward events from the main thread
         // (where the tracker broadcasts) to the worker thread (where the
-        // inner recipe consumes them). The CancelGuardStream polls the
+        // inner recipe consumes them). The SubscriptionGuardStream polls the
         // tracker's event_receiver and forwards events through this bridge.
-        let (bridge_tx, bridge_rx) = futures::channel::mpsc::channel::<Event>(100);
+        let (bridge_tx, bridge_rx) =
+            futures::channel::mpsc::channel::<Event>(EVENT_BRIDGE_CAPACITY);
         let worker_input: EventStream = bridge_rx.boxed();
 
         // Wrap the recipe in a Send-asserting newtype.
@@ -460,7 +475,7 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
 
         let inner = SendableRecipe(inner);
 
-        // Cancellation channel: when the returned `CancelGuardStream` is
+        // Cancellation channel: when the returned `SubscriptionGuardStream` is
         // dropped (iced removes this subscription), `cancel_tx` drops and
         // `cancel_rx` resolves, stopping the worker recipe.
         let (cancel_tx, cancel_rx) = futures::channel::oneshot::channel::<()>();
@@ -478,9 +493,9 @@ impl<M: Send + 'static> Recipe for WorkerRecipe<M> {
         // 1. Holds cancel_tx — dropping it cancels the worker recipe
         // 2. Forwards events from `input` to bridge_tx when polled
         // 3. Never yields items itself
-        Box::pin(CancelGuardStream {
+        Box::pin(SubscriptionGuardStream {
             _cancel_tx: cancel_tx,
-            event_input: Box::pin(input),
+            event_input: input,
             event_bridge_tx: bridge_tx,
             _phantom: std::marker::PhantomData::<M>,
         })

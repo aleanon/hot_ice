@@ -445,7 +445,8 @@ unsafe fn panic_callback_impl<M: Send + 'static>(
     let msg = if msg_ptr.is_null() || msg_len == 0 {
         "unknown panic"
     } else {
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) }
+        let bytes = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        std::str::from_utf8(bytes).unwrap_or("invalid utf-8 in panic message")
     };
     log::error!("hot-ice worker: stream panicked: {}", msg);
 }

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::{column, container, row, scrollable, text};
 use iced::{Element, Length, Subscription, Task, Theme, theme};
@@ -20,7 +22,7 @@ pub struct State {
     /// Running count of key presses received.
     count: u64,
     /// Log of recent key names for display.
-    recent_keys: Vec<String>,
+    recent_keys: VecDeque<String>,
 }
 
 impl State {
@@ -43,9 +45,9 @@ impl State {
 
                 let entry = format_with_modifiers(&key_name, modifiers);
 
-                self.recent_keys.push(entry);
+                self.recent_keys.push_back(entry);
                 if self.recent_keys.len() > MAX_EVENTS {
-                    self.recent_keys.remove(0);
+                    self.recent_keys.pop_front();
                 }
             }
             // Ignore key release events
