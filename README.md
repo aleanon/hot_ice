@@ -159,8 +159,6 @@ cargo run
 
 Now edit your `view` function and save - your changes appear instantly!
 
-## Hot Reloading Modes
-
 Hot Ice supports two levels of hot reloading, each with different trade-offs:
 
 ### 1. Hot reloading without hot state
